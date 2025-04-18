@@ -1,0 +1,11 @@
+scratch/
+dhcr_output_csvs/
+sdk/
+__pycache__/
+.venv/
+.env
+rgbo.pdf
+rgbo.csv
+vacancy_allowance_flowchart.png
+dhcr_tiny.pdf
+dhcr.pdf
