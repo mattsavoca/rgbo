@@ -1,0 +1,11 @@
+# Backend Dependencies
+python-fasthtml # Includes starlette, uvicorn, etc.
+requests # pdf_pipeline might use it?
+httpx # Good practice to include if any backend-to-backend calls might happen
+pydantic
+google-genai
+google-api-core
+pdf2image
+Pillow
+polars
+python-dotenv # For loading GEMINI_API_KEY locally 

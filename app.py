@@ -1,16 +1,19 @@
 from fasthtml.common import *
+import httpx
 from dataclasses import dataclass
-from starlette.responses import FileResponse
-from starlette.background import BackgroundTask # Import BackgroundTask explicitly
+from starlette.responses import FileResponse, HTMLResponse
+from starlette.background import BackgroundTask
+from starlette.datastructures import UploadFile
 import shutil
-import zipfile
 from pathlib import Path
 import os
-import logging # Import logging
-from pdf_handler import run_pdf_processing # Import the real handler function
+import logging
+
+# --- Environment Variables --- Needed for backend URL
+BACKEND_SERVICE_URL = os.environ.get("BACKEND_SERVICE_URL", "http://localhost:8001") # Default for local dev
 
 # Configure logging for the app
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s [APP] - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s [FRONTEND] - %(message)s')
 
 # Configure FastHTML with Monster UI (Pico CSS)
 hdrs = (
@@ -20,19 +23,15 @@ hdrs = (
 )
 app, rt = fast_app(hdrs=hdrs)
 
-# --- Constants and Setup ---
-UPLOAD_DIR = Path("temp_folder")
-UPLOAD_DIR.mkdir(exist_ok=True) # Create the temp folder if it doesn't exist
+# --- Constants and Setup --- Frontend specific
+UPLOAD_DIR = Path("temp_uploads")
+UPLOAD_DIR.mkdir(exist_ok=True)
 TEMP_PDF_PATH = UPLOAD_DIR / "uploaded_pdf.pdf"
 MAX_FILE_SIZE_MB = 25
 MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
 
-# --- Poppler Path (for Windows) ---
-# Ensure this relative path is correct from the location where app.py is run
-POPPLER_PATH = Path("./poppler-24.08.0/Library/bin")
-POPPLER_ENV_VAR = "POPPLER_BIN_PATH" # Environment variable name pdf_to_images will check
+# --- Helper Functions --- Keep UI helpers
 
-# --- Helper Functions ---
 def is_pdf(file: UploadFile) -> bool:
     return file.content_type == 'application/pdf'
 
@@ -148,293 +147,203 @@ async def post_submit(
     generate_images: str = Form(None),
     calculate_vacancy: str = Form(None) # Read the new checkbox
 ):
-    """Processes the PDF, generates results, and returns the results UI."""
-    logging.info("Submit endpoint called.")
+    """Sends the PDF to the backend service for processing and displays results."""
+    logging.info("Frontend submit endpoint called.")
     should_generate_images = generate_images == "true"
     should_calculate_vacancy = calculate_vacancy == "true" # Convert to boolean
     logging.info(f"Generate images requested: {should_generate_images}")
     logging.info(f"Calculate vacancy requested: {should_calculate_vacancy}") # Log the new flag
 
     if not TEMP_PDF_PATH.exists():
-        logging.error("Error: No valid PDF found to process at %s.", TEMP_PDF_PATH)
-        # Return an error message to the results area
-        return Div("Error: No valid PDF file was uploaded or found. Please upload again.", id="results-area")
+        logging.error("Error: No valid temporary PDF found at %s.", TEMP_PDF_PATH)
+        return Div("Error: No valid PDF file found. Please upload again.", id="results-area")
 
-    # --- Environment Variable Setup for Poppler ---
-    original_poppler_path = os.environ.get(POPPLER_ENV_VAR)
-    poppler_path_set = False
-    if should_generate_images:
-        # Check if Poppler path exists before setting env var
-        if POPPLER_PATH.exists() and POPPLER_PATH.is_dir():
-            poppler_path_str = str(POPPLER_PATH.resolve())
-            os.environ[POPPLER_ENV_VAR] = poppler_path_str
-            poppler_path_set = True
-            logging.info(f"Set environment variable {POPPLER_ENV_VAR}={poppler_path_str}")
-        else:
-            logging.warning(f"Poppler path specified in app.py does not exist or is not a directory: {POPPLER_PATH}")
-            logging.warning("Image generation might fail if Poppler is not in system PATH.")
-            # Proceed anyway, assuming it might be in system PATH
-
-    # --- Run Processing --- 
     try:
-        # Run the real PDF pipeline via the handler
-        logging.info("Calling PDF handler to process %s", TEMP_PDF_PATH)
-        # run_pdf_processing returns (results_list, run_output_dir_relative_path)
-        pipeline_results, run_dir_rel_path = run_pdf_processing(
-            TEMP_PDF_PATH, 
-            UPLOAD_DIR, 
-            generate_images=should_generate_images,
-            calculate_vacancy=should_calculate_vacancy # Pass the flag here
-        )
+        logging.info(f"Sending PDF to backend service at {BACKEND_SERVICE_URL}...")
+        backend_process_url = f"{BACKEND_SERVICE_URL}/process_pdf"
 
-        if run_dir_rel_path is None: # Indicates early failure in handler
-             logging.error("PDF handler failed to initialize or find the PDF.")
-             return Div("Error: Failed to start PDF processing.", id="results-area")
+        # Read the temporary PDF file content
+        pdf_content = TEMP_PDF_PATH.read_bytes()
 
-        if not pipeline_results:
-            logging.warning("Pipeline ran but found no units in PDF: %s", TEMP_PDF_PATH)
-            # Check if the run directory exists - maybe processing failed mid-way?
-            run_dir_abs_path = UPLOAD_DIR / run_dir_rel_path
-            if run_dir_abs_path.exists():
-                 msg = f"No apartment units found in the PDF. Processed files (if any) are in {run_dir_rel_path}. Please check the PDF content." 
-            else:
-                 msg = "No apartment units found in the PDF, and no output directory was created. Check processing logs."
+        # Prepare data payload for the backend request
+        data = {
+            'generate_images': str(should_generate_images).lower(),
+            'calculate_vacancy': str(should_calculate_vacancy).lower()
+        }
+        # Prepare files payload
+        files = {'pdf_file': (TEMP_PDF_PATH.name, pdf_content, 'application/pdf')}
+
+        # Use httpx.AsyncClient for async request
+        async with httpx.AsyncClient(timeout=300.0) as client: # Increased timeout for potentially long processing
+            response = await client.post(backend_process_url, data=data, files=files)
+
+        # --- Process Backend Response ---
+        response.raise_for_status() # Raise an exception for bad status codes (4xx or 5xx)
+
+        backend_results = response.json() # Expecting JSON from backend
+
+        if not backend_results or "results" not in backend_results or not backend_results["results"]:
+            msg = backend_results.get("message", "Backend processed the file but returned no unit results.")
+            logging.warning(f"Backend returned no results. Message: {msg}")
+            # Optionally include run_output_dir info if backend provides it
+            run_dir = backend_results.get('run_output_dir')
+            if run_dir:
+                 msg += f" Backend output directory hint: {run_dir}."
             return Div(msg, id="results-area")
 
-        logging.info("PDF handler returned %d results. Generating UI.", len(pipeline_results))
-        # Build the results UI
+        pipeline_results = backend_results["results"] # List of unit dictionaries
+        run_output_dir = backend_results.get("run_output_dir", "unknown_run") # Get the run dir name for downloads
+        logging.info(f"Backend returned {len(pipeline_results)} results. Generating UI.")
+
+        # --- Build Results UI ---
         results_html = []
         for unit in pipeline_results:
-            # Paths are relative to UPLOAD_DIR, e.g., Path('pdf_stem/apt_Unit_X.csv')
-            relative_csv_path = unit['csv_path'] 
-            relative_img_paths = unit.get('img_paths', []) # Get image paths
-            unit_name = unit['unit_name']
-            full_csv_path = UPLOAD_DIR / relative_csv_path # Create full path for reading
+            # Paths are now RELATIVE paths provided by the backend
+            # We need the full backend URL to construct download links
+            relative_csv_path = unit.get('csv_path')
+            relative_img_paths = unit.get('img_paths', [])
+            unit_name = unit.get('unit_name', 'Unknown Unit')
+            # Get structured preview data instead of HTML string
+            csv_preview_data = unit.get('csv_preview_data') # dict with keys: headers, rows, error
 
-            # Basic CSV preview (first 5 lines)
-            preview_table = P(f"CSV: {relative_csv_path.name}") # Default text
-            if full_csv_path.exists():
-                try:
-                    with open(full_csv_path, 'r', encoding='utf-8') as f:
-                        header_line = next(f, None) # Read header, default to None if empty
-                        if header_line:
-                            headers = header_line.strip().split(',')
-                            data_rows = []
-                            # Read up to 4 data lines for preview
-                            for _ in range(4):
-                                data_line = next(f, None)
-                                if data_line:
-                                    row = data_line.strip().split(',')
-                                    # Basic validation: ensure same number of columns as header
-                                    if len(row) == len(headers):
-                                        # Try to format Vacancy Allowance if it exists and is numeric
-                                        try:
-                                             va_index = headers.index("Vacancy Allowance")
-                                             # Attempt to format as percentage, handle errors/strings gracefully
-                                             try:
-                                                  va_float = float(row[va_index])
-                                                  # Format non-zero floats as percentages, leave 0 as 0.0%, handle strings
-                                                  if va_float != 0:
-                                                       row[va_index] = f"{va_float:.2%}" 
-                                                  else:
-                                                       row[va_index] = "0.00%" # Explicitly format zero
-                                             except (ValueError, TypeError):
-                                                  # Keep original string if it's not a valid float (e.g., "Error", "Indeterminable")
-                                                  pass 
-                                        except ValueError:
-                                             pass # Column "Vacancy Allowance" not found in header, ignore formatting
-                                        data_rows.append(row)
-                                    else:
-                                         # Log mismatch and skip row for preview consistency
-                                         logging.warning(f"Row/Header length mismatch in {relative_csv_path.name}: {len(row)} vs {len(headers)}. Skipping row in preview.")
-                                         # data_rows.append(row + [''] * (len(headers) - len(row))) # Alternative: Pad row
-                                else:
-                                    break # End of file reached
+            # --- CSV Download Link ---
+            csv_download_url = None
+            if relative_csv_path:
+                # Construct URL pointing to the backend's download endpoint
+                csv_download_url = f"{BACKEND_SERVICE_URL}/download?path={relative_csv_path}"
 
-                            if headers: # Ensure header was actually read
-                                preview_table = Table(
-                                    Thead(Tr(Th(h) for h in headers)),
-                                    Tbody(
-                                        (Tr(Td(d) for d in row) for row in data_rows)
-                                    )
-                                )
-                            else: # Should not happen if header_line was not None, but safety check
-                                 preview_table = P(f"CSV {relative_csv_path.name} has no header.")
-                        else: # File was completely empty
-                             preview_table = P(f"CSV {relative_csv_path.name} is empty.")
-                except Exception as e:
-                    logging.error(f"Error reading CSV preview for {full_csv_path}: {e}")
-                    preview_table = P(f"Could not display preview for {relative_csv_path.name}")
+            # --- CSV Preview Table Generation ---
+            preview_table_component = None
+            if csv_preview_data and not csv_preview_data.get("error"):
+                headers = csv_preview_data.get("headers", [])
+                data_rows = csv_preview_data.get("rows", [])
+                if headers and data_rows:
+                    preview_table_component = Table(
+                        Thead(Tr(*(Th(h) for h in headers))),
+                        Tbody(*(Tr(*(Td(d) for d in row)) for row in data_rows))
+                    )
+                elif headers:
+                     preview_table_component = P(f"Preview for {unit_name}: Header found, but no data rows.")
+                else:
+                     preview_table_component = P(f"Preview for {unit_name}: No header/data found in preview data.")
+            elif csv_preview_data and csv_preview_data.get("error"):
+                # Display error message from backend preview generation
+                preview_table_component = P(f"Preview Error for {unit_name}: {csv_preview_data['error']}")
             else:
-                logging.warning(f"CSV file specified in results not found: {full_csv_path}")
-                preview_table = P(f"CSV file not found: {relative_csv_path.name}")
+                # Fallback if preview data is missing entirely
+                preview_table_component = P(f"Preview data unavailable for {unit_name}.")
 
-            # --- Image Links --- 
-            image_links = []
+            # --- Image Links ---
+            image_links_components = []
             if relative_img_paths:
-                 image_links.append(H4("Generated Images:"))
+                 image_links_components.append(H4("Generated Images:"))
                  img_list_items = []
                  for img_path in relative_img_paths:
-                    img_download_url = f"/download_unit?path={str(img_path)}"
-                    img_list_items.append(
-                        Li(A(img_path.name, href=img_download_url, download=img_path.name))
-                    )
-                 image_links.append(Ul(*img_list_items))
-            # --- End Image Links ---
+                     # Construct URL pointing to the backend's download endpoint
+                     img_download_url = f"{BACKEND_SERVICE_URL}/download?path={img_path}"
+                     img_name = Path(img_path).name # Extract filename
+                     img_list_items.append(
+                         Li(A(img_name, href=img_download_url, download=img_name))
+                     )
+                 image_links_components.append(Ul(*img_list_items))
 
-            # Prepare download link (path must be string for URL)
-            download_url = f"/download_unit?path={str(relative_csv_path)}"
-            results_html.append(
-                Article( # Use Article for grouping unit results
-                    H3(unit_name),
-                    H4("CSV Preview:"),
-                    preview_table,
-                    A(
-                        "Download Unit CSV",
-                        href=download_url,
-                        role="button", # Pico button styling
-                        download=relative_csv_path.name, # Suggest filename to browser
-                        cls="outline"
-                    ),
-                    *image_links # Add the image links section
-                )
-            )
+            # --- Assemble Unit Article ---
+            unit_article_content = [
+                 H3(unit_name),
+                 H4("CSV Preview:"),
+                 preview_table_component,
+            ]
+            if csv_download_url:
+                 unit_article_content.append(
+                     A(
+                         "Download Unit CSV",
+                         href=csv_download_url,
+                         role="button",
+                         download=Path(relative_csv_path).name, # Suggest filename
+                         cls="outline"
+                     )
+                 )
+            unit_article_content.extend(image_links_components)
+            results_html.append(Article(*unit_article_content))
 
         # Add "Download All" button if results were generated
         if results_html:
-             # This button will trigger download_all which zips UPLOAD_DIR contents
+             # This button points to the backend's zip download endpoint
+             all_download_url = f"{BACKEND_SERVICE_URL}/download_all?run_dir={run_output_dir}"
              results_html.append(
                  A(
                      "Download All Files (.zip)",
-                     href="/download_all",
+                     href=all_download_url,
                      role="button",
-                     download=f"{run_dir_rel_path}_all_files.zip", # Suggest filename based on PDF name
-                     cls="contrast" # Different style for main action
+                     download=f"{run_output_dir}_all_files.zip", # Suggest filename
+                     cls="contrast"
                  )
              )
 
-        return Div(*results_html, id="results-area") # Return the list of components
+        return Div(*results_html, id="results-area")
+
+    except httpx.HTTPStatusError as e:
+        # Handle HTTP errors from the backend
+        error_message = f"Backend service error: {e.response.status_code} - {e.response.text}"
+        logging.error(error_message, exc_info=True)
+        # Try to parse backend error message if JSON
+        try:
+            backend_error = e.response.json()
+            detail = backend_error.get("detail", e.response.text)
+            error_message = f"Backend Error ({e.response.status_code}): {detail}"
+        except:
+            pass # Keep original text if not JSON
+        return Div(error_message, id="results-area")
+
+    except httpx.RequestError as e:
+        # Handle network errors connecting to the backend
+        error_message = f"Error connecting to backend service: {e}"
+        logging.error(error_message, exc_info=True)
+        return Div(error_message, id="results-area")
 
     except Exception as e:
-        logging.error(f"Error during PDF pipeline call or results generation: {e}", exc_info=True)
-        # Provide feedback to the user
-        return Div(f"An unexpected error occurred during processing: {e}. Check application logs.", id="results-area")
-    finally:
-        # --- Environment Variable Cleanup --- 
-        if poppler_path_set:
-            if original_poppler_path is None:
-                # If it didn't exist before, remove it
-                del os.environ[POPPLER_ENV_VAR]
-                logging.info(f"Removed environment variable {POPPLER_ENV_VAR}")
-            else:
-                # Otherwise, restore its original value
-                os.environ[POPPLER_ENV_VAR] = original_poppler_path
-                logging.info(f"Restored environment variable {POPPLER_ENV_VAR} to original value.")
-        elif should_generate_images and original_poppler_path is not None and POPPLER_PATH.exists():
-            # If we intended to set it but didn't (e.g., POPPLER_PATH invalid), 
-            # ensure we don't accidentally leave a pre-existing value if it wasn't ours.
-            # This case is less likely but safe to handle.
-            # Re-check if it matches the original path before restoring, though this check might be overkill.
-            pass # Or potentially restore original_poppler_path if needed, logic depends on desired env behavior
-
-@rt("/download_unit")
-async def get_download_unit(path: str):
-    """Downloads a single file (CSV or image). Path is relative to UPLOAD_DIR."""
-    if not path or '..' in path: # Basic security check
-         logging.warning("Invalid download path requested: %s", path)
-         return HTML("Invalid path", status_code=400)
-
-    file_path = (UPLOAD_DIR / path).resolve() # Resolve to absolute path
-    
-    # Security check: Ensure resolved path is still within UPLOAD_DIR
-    if not file_path.is_file() or not str(file_path).startswith(str(UPLOAD_DIR.resolve())):
-        logging.error("Download attempt failed: File not found or outside upload dir: %s (resolved: %s)", path, file_path)
-        return HTML("File not found or access denied", status_code=404)
-        
-    filename = Path(path).name # Extract filename for download suggestion
-    media_type = 'text/csv' if filename.endswith('.csv') else ('image/png' if filename.endswith('.png') else 'application/octet-stream') # Basic media type detection
-    logging.info(f"Downloading unit file: {file_path} as {filename} with media type {media_type}")
-    return FileResponse(file_path, filename=filename, media_type=media_type)
-
-@rt("/download_all")
-async def get_download_all():
-    """Creates a zip archive of all generated files in UPLOAD_DIR and downloads it."""
-    zip_filename_base = "all_files"
-    # Try to find the run directory name to make the zip filename more specific
-    # This assumes there's only one run's output in UPLOAD_DIR due to reset logic
-    run_dirs = [d for d in UPLOAD_DIR.iterdir() if d.is_dir()] 
-    if len(run_dirs) == 1:
-        zip_filename_base = f"{run_dirs[0].name}_all_files"
-    
-    zip_filename = UPLOAD_DIR / f"{zip_filename_base}.zip"
-    files_found = False
-
-    logging.info(f"Attempting to create zip file: {zip_filename}")
-    try:
-        with zipfile.ZipFile(zip_filename, 'w') as zipf:
-            # Iterate through the UPLOAD_DIR recursively
-            for item in UPLOAD_DIR.rglob('*'):
-                if item.is_file() and item.suffix.lower() in ['.csv', '.png', '.jpg', '.jpeg']:
-                    # Calculate arcname relative to UPLOAD_DIR to preserve structure
-                    arcname = item.relative_to(UPLOAD_DIR)
-                    zipf.write(item, arcname=arcname)
-                    logging.debug(f"Adding to zip: {item} as {arcname}")
-                    files_found = True
-
-        if not files_found:
-             logging.warning("No compatible files (.csv, .png, .jpg, .jpeg) found in %s to zip.", UPLOAD_DIR)
-             # Clean up empty zip file
-             if zip_filename.exists(): os.remove(zip_filename) 
-             return HTML("No files found to download.", status_code=404)
-
-        logging.info(f"Zip file created successfully: {zip_filename}")
-        # Return the zip file and delete it afterwards using BackgroundTask
-        return FileResponse(zip_filename, filename=zip_filename.name, media_type='application/zip', background=BackgroundTask(os.remove, zip_filename))
-
-    except Exception as e:
-        logging.error(f"Error creating zip file: {e}", exc_info=True)
-        # Clean up partial zip if it exists
-        if zip_filename.exists():
-            try:
-                os.remove(zip_filename)
-            except OSError as remove_err:
-                 logging.error(f"Error removing partial zip file {zip_filename}: {remove_err}")
-        return HTML("Error creating download package.", status_code=500)
-
+        # Handle unexpected errors during frontend processing or backend communication
+        logging.error(f"An unexpected error occurred: {e}", exc_info=True)
+        return Div(f"An unexpected error occurred: {e}", id="results-area")
 
 @rt("/reset")
 async def post_reset():
-    """Clears the temporary folder and resets the UI."""
-    print("Resetting application state.")
-    # Remove the temp directory contents
+    """Clears the frontend temporary file and resets the UI. Optionally calls backend reset."""
+    logging.info("Resetting frontend application state.") # Changed print to logging
+
+    # --- Frontend Cleanup --- 
+    # Remove the temp uploaded PDF file if it exists
     if TEMP_PDF_PATH.exists():
         try:
              TEMP_PDF_PATH.unlink()
+             logging.info(f"Deleted temporary file: {TEMP_PDF_PATH}")
         except OSError as e:
-             # Log if even the single temp PDF fails deletion, but continue
              logging.warning(f"Could not delete temporary PDF {TEMP_PDF_PATH}: {e}")
 
-    for item in UPLOAD_DIR.iterdir():
-        try:
-            if item.is_file():
-                item.unlink()
-            elif item.is_dir():
-                shutil.rmtree(item)
-        except PermissionError as e:
-            # Specifically catch permission errors (like file-in-use) during rmtree
-            logging.warning(f"Could not remove directory {item} during reset (likely in use): {e}")
-        except OSError as e:
-            # Catch other potential OS errors during deletion
-            logging.warning(f"Could not remove item {item} during reset: {e}")
+    # Remove any other files directly in the frontend's upload dir (optional)
+    # for item in UPLOAD_DIR.iterdir():
+    #     if item.is_file(): item.unlink()
 
-    # Recreate dir just in case it got deleted somehow (though we mostly delete contents)
-    UPLOAD_DIR.mkdir(exist_ok=True)
+    # --- Optional: Call Backend Reset Endpoint --- 
+    backend_reset_url = f"{BACKEND_SERVICE_URL}/reset_backend"
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+             logging.info(f"Sending reset request to backend: {backend_reset_url}")
+             response = await client.post(backend_reset_url)
+             response.raise_for_status()
+             logging.info(f"Backend reset successful: {response.status_code}")
+    except httpx.RequestError as e:
+         logging.warning(f"Could not connect to backend reset endpoint: {e}")
+    except httpx.HTTPStatusError as e:
+         logging.warning(f"Backend reset endpoint returned error {e.response.status_code}: {e.response.text}")
+    except Exception as e:
+         logging.warning(f"An error occurred during backend reset call: {e}")
 
-    logging.info("Temporary file cleanup attempted.") # Changed print to logging.info
-    # Return the initial form state HTML to replace #main-content
+    # --- Return Initial UI State --- 
+    logging.info("Returning initial form state.")
     return get_initial_form_area()
 
 
 # --- Run the app ---
-# if __name__ == "__main__":
-#     serve() 
+if __name__ == "__main__":
+    serve() 
