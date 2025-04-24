@@ -1,43 +1,66 @@
 import polars as pl
 from datetime import datetime
 import os
+import logging # Import logging
+
+# Configure logging specific to this module IF not configured globally
+# This ensures logs appear if the module is run standalone or imported.
+# If global config exists (e.g., in app.py or pdf_handler.py), this might be redundant but is safe.
+log = logging.getLogger(__name__) # Use a module-specific logger
+if not log.hasHandlers(): # Avoid adding handlers multiple times if already configured
+     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s [%(name)s] - %(message)s')
+
 
 RGBO_CSV_PATH = "rgbo.csv" # Path to the Rent Guidelines Board Orders CSV
 
 def load_rgb_orders(csv_path=RGBO_CSV_PATH):
     """Loads RGBO data, parses dates using Polars, and prepares it for lookup."""
+    log.info(f"Attempting to load RGBO data from: {csv_path}") # Use logger
     if not os.path.exists(csv_path):
+        log.error(f"RGBO data file not found at the specified path: {csv_path}") # Use logger
         raise FileNotFoundError(f"RGBO data file not found at: {csv_path}")
 
     try:
         # Use Polars read_csv
         df = pl.read_csv(csv_path)
+        log.info(f"Successfully read CSV. Initial shape: {df.shape}") # Use logger
 
         # Convert date columns to datetime objects using Polars expressions
+        log.info("Parsing date columns...") # Use logger
         df = df.with_columns([
-            pl.col('beginning_date').str.strptime(pl.Date, "%Y-%m-%d", strict=False).alias('beginning_date'),
-            pl.col('end_date').str.strptime(pl.Date, "%Y-%m-%d", strict=False).alias('end_date')
+            pl.col('beginning_date').str.strptime(pl.Date, "%m/%d/%Y", strict=False).alias('beginning_date'),
+            pl.col('end_date').str.strptime(pl.Date, "%m/%d/%Y", strict=False).alias('end_date')
         ])
+        log.info(f"Shape after date parsing attempt: {df.shape}") # Use logger
 
         # Convert rate columns to numeric (Float64), coercing errors to null
         rate_cols = ['one_year_rate', 'two_year_rate', 'vacancy_lease_rate']
+        log.info("Parsing rate columns...") # Use logger
         for col in rate_cols:
             if col in df.columns:
                 df = df.with_columns(pl.col(col).cast(pl.Float64, strict=False))
             else:
-                print(f"Warning: Expected rate column '{col}' not found in {csv_path}. Filling with null.")
+                log.warning(f"Expected rate column '{col}' not found in {csv_path}. Filling with null.") # Use logger
                 df = df.with_columns(pl.lit(None).cast(pl.Float64).alias(col)) # Add column with nulls
 
-        # Drop rows where essential dates are missing (null)
+        # Drop rows where essential dates are missing (null) after parsing attempts
+        log.info("Dropping rows with null beginning_date or end_date...") # Use logger
+        original_rows = df.height
         df = df.drop_nulls(subset=['beginning_date', 'end_date'])
+        rows_after_drop = df.height
+        log.info(f"Shape after dropping null dates: {df.shape}. Dropped {original_rows - rows_after_drop} rows.") # Use logger
+
+        if df.is_empty():
+             log.warning(f"RGBO DataFrame is empty after processing (dropping null dates). Check date parsing for {csv_path}.") # Use logger
+
         # Sort by beginning_date descending
         df = df.sort(by='beginning_date', descending=True)
 
-        print(f"Loaded {len(df)} RGBO records from {csv_path}")
+        log.info(f"Successfully loaded and processed {len(df)} RGBO records from {csv_path}") # Use logger
         return df
     except Exception as e:
-        print(f"Error loading or processing RGBO data from {csv_path}: {e}")
-        raise
+        log.error(f"Error loading or processing RGBO data from {csv_path}: {e}", exc_info=True) # Use logger, add exc_info
+        raise # Re-raise the exception after logging
 
 def get_rates_for_date(rgb_data, relevant_date):
     """
@@ -136,15 +159,15 @@ def calculate_vacancy_allowance(unit_data, rgb_data):
         """Helper function for logic shared by New Tenant (Term 1) and Existing Tenant."""
         if DATE_RANGES["range_83_97"][0] <= lsd <= DATE_RANGES["range_83_97"][1]:
              # Flowchart: [one_year_renewal_rate] - [vacancy_lease_rate]
-             return one_yr_rate - vac_lease_rate
+             return (one_yr_rate - vac_lease_rate)
         elif DATE_RANGES["range_97_11"][0] <= lsd <= DATE_RANGES["range_97_11"][1]:
              # Flowchart: 20% - [two_year_renewal_rate] - [one_year_renewal]
-             return 0.20 - two_yr_rate - one_yr_rate
+             return 0.20 - (two_yr_rate - one_yr_rate)
         elif DATE_RANGES["range_11_15"][0] <= lsd <= DATE_RANGES["range_11_15"][1]:
             if unit_data['had_vacancy_allowance_in_prev_12_mo']:
                  if unit_data['previous_preferential_rent_has_value']:
                      # Flowchart: 20% - [two_year_renewal_rate] - [one_year_renewal]
-                     return 0.20 - two_yr_rate - one_yr_rate
+                     return 0.20 - (two_yr_rate - one_yr_rate)
                  else:
                       # Flowchart: 20% - [two_year_renewal_rate]
                       return 0.20 - two_yr_rate
@@ -155,7 +178,7 @@ def calculate_vacancy_allowance(unit_data, rgb_data):
                 elif tenure == 4: return 0.15
                 elif tenure > 4:
                     # Flowchart: 20% - [two_year_renewal_rate] - [one_year_renewal]
-                    return 0.20 - two_yr_rate - one_yr_rate
+                    return 0.20 - (two_yr_rate - one_yr_rate)
                 else: return "Indeterminable: Invalid Tenure"
         elif DATE_RANGES["range_15_19"][0] <= lsd <= DATE_RANGES["range_15_19"][1]:
              if unit_data['had_vacancy_allowance_in_prev_12_mo']:
@@ -198,7 +221,7 @@ def calculate_vacancy_allowance(unit_data, rgb_data):
             if DATE_RANGES["range_83_97"][0] <= lsd <= DATE_RANGES["range_83_97"][1]:
                  # Flowchart: 20% - [two_year_renewal_rate] + [vacancy_lease_rate]
                  # Interpretation: Subtract two_yr, add vac_lease. CHECK THIS ASSUMPTION.
-                 return 0.20 - two_yr_rate + vac_lease_rate
+                 return 0.20 - (two_yr_rate + vac_lease_rate)
             elif DATE_RANGES["range_97_11"][0] <= lsd <= DATE_RANGES["range_97_11"][1]:
                  return 0.20
             elif DATE_RANGES["range_11_15"][0] <= lsd <= DATE_RANGES["range_11_15"][1]:
@@ -230,52 +253,126 @@ def calculate_vacancy_allowance(unit_data, rgb_data):
 
 # --- Example Usage ---
 if __name__ == "__main__":
+    # Define the path to the sample CSV in the root directory
+    SAMPLE_CSV_PATH = "apt_sample.csv" # Assuming it's in the same dir as rgbo.csv
+
     print("Loading RGBO data...")
     try:
-        rgb_order_data = load_rgb_orders()
+        # Load RGBO data first, as it's needed for calculations
+        rgb_order_data = load_rgb_orders() # Uses the default RGBO_CSV_PATH
 
-        # Example Unit Data (replace with actual data source)
-        sample_units = [
-            { # Example 1: PE Status
-                'apartment_status': "PE", 'is_new_tenant': False, 'term_length': 1,
-                'lease_start_date': datetime(2023, 10, 15).date(), # Use date object
-                'had_vacancy_allowance_in_prev_12_mo': False,
-                'previous_preferential_rent_has_value': False, 'tenant_tenure_years': 5
-            },
-            { # Example 2: New Tenant, Term 1, Date 2018, No Vac Allowance, Tenure 1yr
-              'apartment_status': "RS", 'is_new_tenant': True, 'term_length': 1,
-              'lease_start_date': datetime(2018, 7, 1).date(), # Use date object
-              'had_vacancy_allowance_in_prev_12_mo': False,
-              'previous_preferential_rent_has_value': False, 'tenant_tenure_years': 1
-            },
-             { # Example 3: New Tenant, Term 2+, Date 1990
-              'apartment_status': "RS", 'is_new_tenant': True, 'term_length': 2,
-              'lease_start_date': datetime(1990, 1, 1).date(), # Use date object
-              'had_vacancy_allowance_in_prev_12_mo': False, # Doesn't matter for this branch
-              'previous_preferential_rent_has_value': False, 'tenant_tenure_years': 0 # Doesn't matter
-            },
-             { # Example 4: Existing Tenant, Date 2012, Had Vac Allowance, Had Pref Rent
-              'apartment_status': "RS", 'is_new_tenant': False, 'term_length': 1, # Term length irrelevant for existing?
-              'lease_start_date': datetime(2012, 5, 5).date(), # Use date object
-              'had_vacancy_allowance_in_prev_12_mo': True,
-              'previous_preferential_rent_has_value': True, 'tenant_tenure_years': 6
-            },
-             { # Example 5: Missing Date
-              'apartment_status': "RS", 'is_new_tenant': False, 'term_length': 1,
-              'lease_start_date': None, # Use None instead of pd.NA
-              'had_vacancy_allowance_in_prev_12_mo': True,
-              'previous_preferential_rent_has_value': True, 'tenant_tenure_years': 6
-            },
+        print(f"Loading sample unit data from: {SAMPLE_CSV_PATH}")
+        if not os.path.exists(SAMPLE_CSV_PATH):
+             print(f"Error: Sample CSV file not found at {SAMPLE_CSV_PATH}")
+             exit() # Exit if sample file is missing
+
+        # Load the sample CSV
+        df = pl.read_csv(SAMPLE_CSV_PATH, try_parse_dates=True)
+
+        if df.is_empty():
+            print(f"Sample CSV file {SAMPLE_CSV_PATH} is empty. Exiting.")
+            exit()
+
+        print(f"Preprocessing sample data (replicating pdf_handler logic)...")
+
+        # --- Replicate Feature Engineering from pdf_handler.py ---
+        required_source_cols = ["Lease Began", "Lease Ends", "Legal Reg Rent", "Actual Rent Paid", "Apt Status", "Tenant Name"]
+        missing_cols = [col for col in required_source_cols if col not in df.columns]
+        if missing_cols:
+            print(f"Error: Sample CSV {SAMPLE_CSV_PATH} is missing required columns: {missing_cols}")
+            exit()
+
+        # Ensure correct types after load
+        df = df.with_columns([
+            pl.col("Lease Began").cast(pl.Date, strict=False),
+            pl.col("Lease Ends").cast(pl.Date, strict=False),
+            pl.col("Legal Reg Rent").cast(pl.Float64, strict=False),
+            pl.col("Actual Rent Paid").cast(pl.Float64, strict=False),
+            pl.col("Apt Status").cast(pl.String, strict=False).fill_null("Unknown"),
+            pl.col("Tenant Name").cast(pl.String, strict=False).fill_null("Unknown Tenant")
+        ])
+
+        # Sort by lease start date
+        df = df.sort("Lease Began", nulls_last=True)
+
+        # Feature Engineering expressions
+        df = df.with_columns([
+            pl.when(pl.col("Tenant Name").shift(1).is_null() | (pl.col("Tenant Name") != pl.col("Tenant Name").shift(1)))
+              .then(pl.lit(True))
+              .otherwise(pl.lit(False))
+              .alias("is_new_tenant"),
+            pl.when(pl.col("Lease Ends").is_not_null() & pl.col("Lease Began").is_not_null())
+              .then(
+                  pl.when((pl.col("Lease Ends") - pl.col("Lease Began")).dt.total_days() > 548)
+                  .then(pl.lit(2))
+                  .otherwise(pl.lit(1))
+              )
+              .otherwise(pl.lit(1))
+              .alias("term_length"),
+            pl.col("Lease Began").alias("lease_start_date"),
+            pl.lit(False).alias("had_vacancy_allowance_in_prev_12_mo"), # Placeholder
+            pl.when(
+                pl.col("Actual Rent Paid").shift(1).is_not_null() &
+                pl.col("Legal Reg Rent").shift(1).is_not_null() &
+                (pl.col("Actual Rent Paid").shift(1) < pl.col("Legal Reg Rent").shift(1))
+             )
+              .then(pl.lit(True))
+              .otherwise(pl.lit(False))
+              .fill_null(False)
+              .alias("previous_preferential_rent_has_value"),
+        ])
+
+        # Tenant Tenure Calculation
+        df = df.with_columns(
+            pl.col("Tenant Name").rle_id().alias("tenant_block_id")
+        )
+        df = df.with_columns(
+            pl.when(pl.col("Lease Began").is_not_null())
+            .then(
+                ((pl.col("Lease Began") - pl.col("Lease Began").first().over("tenant_block_id")).dt.total_days() / 365.25)
+                .floor()
+                .cast(pl.Int64)
+            )
+            .otherwise(pl.lit(0))
+            .alias("tenant_tenure_years")
+        ).drop("tenant_block_id")
+        # --- End of Replicated Logic ---
+
+        print("\nCalculating vacancy allowances for preprocessed sample data:")
+        # Convert DataFrame rows to list of dictionaries for processing
+        unit_data_list = df.to_dicts()
+
+        for i, unit_data_row in enumerate(unit_data_list):
+            # Prepare the unit_data dict expected by the function
+            # Note: The keys in unit_data_row match the DataFrame columns now
+            unit_data_for_calc = {
+                'apartment_status': unit_data_row.get("Apt Status"),
+                'is_new_tenant': unit_data_row.get("is_new_tenant"),
+                'term_length': unit_data_row.get("term_length"),
+                'lease_start_date': unit_data_row.get("lease_start_date"), # Already a date object
+                'had_vacancy_allowance_in_prev_12_mo': unit_data_row.get("had_vacancy_allowance_in_prev_12_mo"),
+                'previous_preferential_rent_has_value': unit_data_row.get("previous_preferential_rent_has_value"),
+                'tenant_tenure_years': unit_data_row.get("tenant_tenure_years")
+            }
+
+            # Debug print the data being passed FOR THE FIRST ROW ONLY
+            if i == 0:
+                print("\n--- Data for first row passed to calculate_vacancy_allowance: ---")
+                for key, value in unit_data_for_calc.items():
+                    print(f"  {key}: {value} (Type: {type(value)})")
+                print("----------------------------------------------------------------")
 
 
-        ]
-
-        print("\nCalculating vacancy allowances for sample units:")
-        for i, unit in enumerate(sample_units):
-            allowance = calculate_vacancy_allowance(unit, rgb_order_data)
-            print(f"  Unit {i+1}: {allowance}")
+            allowance = calculate_vacancy_allowance(unit_data_for_calc, rgb_order_data)
+            # Include original Lease Began for context in output
+            original_lease_began = unit_data_row.get("Lease Began")
+            print(f"  Row {i+1} (Lease Began: {original_lease_began}): Calculated Allowance = {allowance}")
 
     except FileNotFoundError as e:
-        print(e)
+        print(f"Error: {e}") # Handles RGBO file not found too
     except Exception as e:
-        print(f"An error occurred during example execution: {e}") 
+        # Use logger if available, otherwise print
+        log.error(f"An error occurred during example execution: {e}", exc_info=True) if 'log' in locals() else print(f"An error occurred during example execution: {e}")
+        # Consider printing traceback explicitly if logger isn't set up in __main__
+        import traceback
+        traceback.print_exc() 

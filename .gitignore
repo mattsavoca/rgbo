@@ -3,9 +3,14 @@ dhcr_output_csvs/
 sdk/
 __pycache__/
 .venv/
+scope/
 .env
 rgbo.pdf
 rgbo.csv
 vacancy_allowance_flowchart.png
+poppler-24.08.0/
+workflow_update_042125.mp4
+apt_sample.csv
+dhcr_small.pdf
 dhcr_tiny.pdf
 dhcr.pdf

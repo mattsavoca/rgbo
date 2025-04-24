@@ -38,9 +38,9 @@ else:
 # Check the Gemini documentation for the latest recommended models supporting PDF input.
 MODEL_NAME = "gemini-2.0-flash-exp" 
 LEN_TIMEOUT = 1000 * 60 # (in miliseconds) 
-# Directory for output CSV files
-OUTPUT_DIR = Path("./dhcr_output_csvs")
-OUTPUT_DIR.mkdir(exist_ok=True) # Create the directory if it doesn't exist
+# Directory for output CSV files when run as script
+DEFAULT_OUTPUT_DIR = Path("./dhcr_output_csvs")
+# DEFAULT_OUTPUT_DIR.mkdir(exist_ok=True) # Create the directory if it doesn't exist (moved to main block)
 
 # --- Pydantic Models ---
 
@@ -56,7 +56,7 @@ def parse_flexible_date(value: Optional[Union[str, date]]) -> Optional[date]:
         return None
         
     # Special handling for "%m-%d-%y" format with century inference
-    m_d_y_pattern = re.compile(r"(\d{1,2})-(\d{1,2})-(\d{2})$")
+    m_d_y_pattern = re.compile(r"(\d{1,2})[-/](\d{1,2})[-/](\d{2})$") # Accept hyphen or slash
     match = m_d_y_pattern.match(value)
     if match:
         month, day, year = match.groups()
@@ -86,7 +86,7 @@ def parse_flexible_date(value: Optional[Union[str, date]]) -> Optional[date]:
     logging.warning(f"Could not parse date: {value}")
     return None # Return None if all formats fail
 
-def parse_currency(value: Optional[Union[str, float, int]]) -> Optional[float]:
+def parse_currency(value: Union[str, float, int]) -> Optional[float]:
     """Removes currency symbols, commas and converts to float."""
     if value is None:
         return None
@@ -112,13 +112,13 @@ class DHCR_Entry(BaseModel):
     effective_date: Optional[date] = Field(None, alias="Effective Date", description="Effective date of the lease")
     legal_reg_rent: Optional[float] = Field(None, alias="Legal Reg Rent", description="Legal Regulated Rent (USD)")
     actual_rent_paid: Optional[float] = Field(None, alias="Actual Rent Paid", description="Actual Rent Paid (USD)")
-    filing_date: Optional[str] = Field(None, alias="Filing Date", description="Date in which it was filed (e.g., 'YYYY-MM-DD' or 'NC' for None)")
+    filing_date: Optional[date] = Field(None, alias="Filing Date", description="Date in which it was filed (e.g., 'YYYY-MM-DD' or 'NC' for None)")
     tenant_name: Optional[str] = Field(None, alias="Tenant Name", description="Tenant's Legal Name")
     lease_began: Optional[date] = Field(None, alias="Lease Began", description="When lease actually began")
     lease_ends: Optional[date] = Field(None, alias="Lease Ends", description="When lease ends") # Corrected from 'Lease Began'
 
     # Pydantic V2 Validators
-    @field_validator('effective_date', 'lease_began', 'lease_ends', mode='before')
+    @field_validator('effective_date', 'lease_began', 'lease_ends', 'filing_date', mode='before')
     @classmethod
     def parse_dates(cls, value):
         return parse_flexible_date(value)
@@ -127,12 +127,6 @@ class DHCR_Entry(BaseModel):
     @classmethod
     def parse_rents(cls, value):
         return parse_currency(value)
-
-    @field_validator('filing_date', mode='before')
-    @classmethod
-    def handle_filing_date_nc(cls, value):
-        # Simply pass the value to parse_flexible_date, which now handles NC values
-        return parse_flexible_date(value)
 
     @field_validator('apt_number', mode='before')
     @classmethod
@@ -149,7 +143,7 @@ class DHCR_Entry(BaseModel):
             "Effective Date": self.effective_date.isoformat() if self.effective_date else None,
             "Legal Reg Rent": self.legal_reg_rent,
             "Actual Rent Paid": self.actual_rent_paid,
-            "Filing Date": self.filing_date,
+            "Filing Date": self.filing_date.isoformat() if self.filing_date else None,
             "Tenant Name": self.tenant_name,
             "Lease Began": self.lease_began.isoformat() if self.lease_began else None,
             "Lease Ends": self.lease_ends.isoformat() if self.lease_ends else None,
@@ -196,7 +190,7 @@ def identify_dhcr_pages(client: Client, pdf_data: bytes) -> List[int]:
     prompt = (
         "Analyze the provided PDF document, which contains rent registration information. "
         "Identify the 1-based page numbers that contain a DHCR table with actual registration data. "
-        "These tables are usually centered on the page and have columns like 'Apt Number', 'Effective Date', 'Legal Reg Rent', etc. "
+        "These tables are usually centered on the page and have the following columns: 'Apartment Number', 'Apt Status', 'Effective Date', 'Legal Reg Rent', 'Actual Rent Paid', 'Filing Date', 'Tenant Name', 'Lease Began', 'Lease Ends'. "
         "Critically, **exclude** any pages where the table area primarily contains the phrase "
         "'No Information Found for this Registration Year' or similar indications of no data. "
         "Return the result ONLY as a JSON list of integer page numbers, e.g., [3, 4, 6]."
@@ -273,12 +267,12 @@ def extract_data_from_page(client: Client, pdf_data: bytes, page_number: int) ->
     prompt = (
         f"From the provided PDF document, focus **only** on page {page_number}. "
         f"Extract all rows from the DHCR table present on this page. "
-        "The table contains rent registration information with columns like 'Apt Number', 'Apt Status', 'Effective Date', "
-        "'Legal Reg Rent', 'Actual Rent Paid', 'Filing Date', 'Tenant Name', 'Lease Began', 'Lease Ends'. "
+        "These tables are usually centered on the page and have the following columns: 'Apartment Number', 'Apt Status', 'Effective Date', 'Legal Reg Rent', 'Actual Rent Paid', 'Filing Date', 'Tenant Name', 'Lease Began', 'Lease Ends'. "
         "Return the extracted data as a JSON object with a single key 'dhcr_entries', where the value is a list of JSON objects. "
         "Each object in the list should represent one row from the table and conform to the following JSON schema:\n"
         f"{json.dumps(schema, indent=2)}\n"
-        "Ensure dates are formatted as 'YYYY-MM-DD'. If a date is missing or unclear, represent it as null. "
+        "Ensure dates are formatted as 'YYYY-MM-DD' even if the date is not provided in that format on the page (it is often provided in 'MM/DD/YY' format). If a date is missing or unclear, represent it as null. "
+        "Take extra consideration aligning the correct values/dates to the correct variable names, especially in cases where there are blanks or missing values proceeding or preceeding it in the row."
         "If 'Filing Date' is 'NC', represent it as null. "
         "Normalize apartment numbers (e.g., '1A' instead of ' 1a '). "
         "Parse monetary values (Legal Reg Rent, Actual Rent Paid) as numbers, removing any '$' or ',' symbols. Represent missing monetary values as null. "
@@ -343,8 +337,8 @@ def extract_data_from_page(client: Client, pdf_data: bytes, page_number: int) ->
 
 # --- Data Processing and Export ---
 
-def export_unit_to_csv(apt_number: str, unit_data: List[DHCR_Entry]):
-    """Exports the data for a single apartment unit to a CSV file."""
+def export_unit_to_csv(apt_number: str, unit_data: List[DHCR_Entry], output_dir: Path):
+    """Exports the data for a single apartment unit to a CSV file in the specified directory."""
     if not unit_data:
         logging.warning(f"No data found for Apt Number: {apt_number}. Skipping CSV export.")
         return
@@ -353,9 +347,12 @@ def export_unit_to_csv(apt_number: str, unit_data: List[DHCR_Entry]):
     # Handle None dates by placing them at the beginning or end (here, beginning)
     unit_data.sort(key=lambda x: x.effective_date or date.min)
 
+    # Ensure output directory exists
+    output_dir.mkdir(parents=True, exist_ok=True) # Ensure the target directory exists
+
     # Sanitize apartment number for filename
     safe_apt_number = re.sub(r'[\\/*?:"<>|]', "_", apt_number) # Replace invalid filename characters
-    filename = OUTPUT_DIR / f"apt_{safe_apt_number}.csv"
+    filename = output_dir / f"apt_{safe_apt_number}.csv" # Use the passed output_dir
 
     logging.info(f"Exporting data for Apt {apt_number} to {filename}")
 
@@ -379,8 +376,8 @@ def export_unit_to_csv(apt_number: str, unit_data: List[DHCR_Entry]):
 
 # --- Main Execution ---
 
-def process_pdf(pdf_filepath: Union[str, Path]):
-    """Main function to process a single PDF."""
+def process_pdf(pdf_filepath: Union[str, Path], output_dir: Path, generate_images: bool = False):
+    """Main function to process a single PDF, outputting results to the specified directory."""
     pdf_path = Path(pdf_filepath)
     if not pdf_path.is_file():
         logging.error(f"PDF file not found: {pdf_path}")
@@ -422,7 +419,7 @@ def process_pdf(pdf_filepath: Union[str, Path]):
 
     if not building_dhcr_db:
         logging.warning("No DHCR entries were successfully extracted from any identified page.")
-        return
+        return # Return early if no data extracted
 
     logging.info(f"Total extracted DHCR entries across all pages: {len(building_dhcr_db)}")
 
@@ -438,11 +435,29 @@ def process_pdf(pdf_filepath: Union[str, Path]):
 
 
     # 6. Export each unit's data to CSV, sorted by date
-    logging.info(f"Found {len(grouped_by_apt)} unique apartment units. Exporting to CSV...")
+    logging.info(f"Found {len(grouped_by_apt)} unique apartment units. Exporting to CSV in {output_dir}...")
     for apt_number, unit_entries in grouped_by_apt.items():
-        export_unit_to_csv(apt_number, unit_entries)
+        export_unit_to_csv(apt_number, unit_entries, output_dir) # Pass output_dir here
 
-    logging.info(f"Processing finished for {pdf_path}. CSV files are in {OUTPUT_DIR}")
+    # 7. Generate images if requested
+    if generate_images:
+        image_output_dir = output_dir / f"{pdf_path.stem}_images"
+        logging.info(f"Image generation requested. Outputting images to: {image_output_dir}")
+        try:
+            # pdf_to_images needs the output dir created
+            image_output_dir.mkdir(parents=True, exist_ok=True)
+            # Ensure the function receives Path objects or strings as expected
+            pdf_to_images(str(pdf_path), str(image_output_dir))
+            logging.info(f"Successfully converted PDF pages to images in {image_output_dir}")
+        except ImportError as ie:
+             logging.error(f"Failed to convert PDF to images. pdf2image or its dependency (Poppler) might be missing: {ie}")
+             logging.error("Please ensure pdf2image is installed (`pip install pdf2image`) and Poppler is installed and in your system's PATH.")
+        except Exception as e:
+            logging.error(f"Failed to convert PDF to images: {e}")
+            # Continue even if image generation fails
+
+
+    logging.info(f"Processing finished for {pdf_path}. Output files are in {output_dir}")
 
 
 if __name__ == "__main__":
@@ -466,23 +481,8 @@ if __name__ == "__main__":
     elif not pdf_path.is_file():
          logging.error(f"The specified path is not a file: {pdf_path}")
     else:
-        # Conditionally generate images if the flag is set
-        if args.images:
-            # Create an image output directory based on the PDF name within the main output dir
-            image_output_dir = OUTPUT_DIR / f"{pdf_path.stem}_images"
-            logging.info(f"Image generation requested. Outputting images to: {image_output_dir}")
-            try:
-                # Ensure the function receives Path objects or strings as expected
-                pdf_to_images(str(pdf_path), str(image_output_dir))
-                logging.info(f"Successfully converted PDF pages to images in {image_output_dir}")
-            except ImportError as ie:
-                 logging.error(f"Failed to convert PDF to images. pdf2image or its dependency (Poppler) might be missing: {ie}")
-                 logging.error("Please ensure pdf2image is installed (`pip install pdf2image`) and Poppler is installed and in your system's PATH.")
-                 # Optionally exit if image generation is critical
-                 # exit(1)
-            except Exception as e:
-                logging.error(f"Failed to convert PDF to images: {e}")
-                # Continue with CSV processing even if image generation fails
+        # Create the default output directory when run as script
+        DEFAULT_OUTPUT_DIR.mkdir(exist_ok=True)
 
-        # Proceed with the main PDF processing
-        process_pdf(pdf_path)
+        # Pass the default output dir and image flag to process_pdf
+        process_pdf(pdf_path, DEFAULT_OUTPUT_DIR, generate_images=args.images)
