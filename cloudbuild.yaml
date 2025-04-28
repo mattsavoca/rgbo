@@ -1,6 +1,0 @@
-# cloudbuild.yaml
-steps:
-- name: 'gcr.io/cloud-builders/docker'
-  args: [ 'build', '-t', 'us-central1-docker.pkg.dev/rgbo-457919/rgbo-repo/dhcr-processor:latest', '.' ]
-images:
-- 'us-central1-docker.pkg.dev/rgbo-457919/rgbo-repo/dhcr-processor:latest'
