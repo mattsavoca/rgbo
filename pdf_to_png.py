@@ -1,60 +1,67 @@
 import os
 import io
 import logging # Import logging
-from pdf2image import convert_from_path, pdfinfo_from_path
-from pdf2image.exceptions import PDFInfoNotInstalledError, PDFPageCountError, PDFSyntaxError
-from PIL import Image
+# Remove pdf2image imports
+# from pdf2image import convert_from_path, pdfinfo_from_path
+# from pdf2image.exceptions import PDFInfoNotInstalledError, PDFPageCountError, PDFSyntaxError
+import fitz # Import PyMuPDF
+#from PIL import Image
 
 PDF_PATH = "dhcr_tiny.pdf" # Replace with your PDF file path
 TEMP_IMAGE_DIR = "temp_images"
-# Remove the hardcoded POPPLER_PATH constant, as it's now handled via env var/argument
-# POPPLER_PATH = r".\\poppler_x86_x64\\poppler-24.08.0\\Library\\bin" 
-POPPLER_ENV_VAR = "POPPLER_BIN_PATH" # The environment variable app.py sets
+# Remove Poppler path related variables
+# POPPLER_ENV_VAR = "POPPLER_BIN_PATH" 
 
-
-def pdf_to_images(pdf_path, output_dir, poppler_path=None):
-    """Converts a PDF to a series of PNG images."""
+# Update function signature: remove poppler_path argument
+def pdf_to_images(pdf_path, output_dir):
+    """Converts a PDF to a series of PNG images using PyMuPDF (fitz)."""
     os.makedirs(output_dir, exist_ok=True)
+    image_paths = []
 
-    # Determine the Poppler path to use
-    path_to_use = poppler_path # Prioritize the argument
-    if not path_to_use:
-        path_to_use = os.environ.get(POPPLER_ENV_VAR)
-        if path_to_use:
-            logging.info(f"Using Poppler path from environment variable {POPPLER_ENV_VAR}: {path_to_use}")
-        else:
-            logging.warning(f"Poppler path argument not provided and environment variable {POPPLER_ENV_VAR} not set. Relying on system PATH.")
-            # path_to_use remains None, pdf2image will try system PATH
+    # Remove Poppler path determination logic
+    # ... existing code ...
 
     try:
-        # First, check if Poppler is accessible and PDF is valid using pdfinfo
-        try:
-             pdfinfo = pdfinfo_from_path(pdf_path, poppler_path=path_to_use)
-             logging.info(f"PDF Info: {pdfinfo}") # Log info like page count
-        except (PDFInfoNotInstalledError, FileNotFoundError) as e:
-             logging.error(f"Poppler not found or not installed correctly. Checked path: {path_to_use}. Error: {e}")
-             logging.error("Ensure Poppler binaries are in the specified path or system PATH.")
-             raise RuntimeError("Poppler not found, cannot generate images.") from e
-        except PDFPageCountError as e:
-            logging.error(f"Could not determine page count for PDF: {pdf_path}. Error: {e}")
-            raise RuntimeError("Invalid PDF or could not read page count.") from e
-        except PDFSyntaxError as e:
-             logging.error(f"PDF syntax error in file: {pdf_path}. Error: {e}")
-             raise RuntimeError("PDF file appears corrupted.") from e
+        # Open the PDF with PyMuPDF
+        doc = fitz.open(pdf_path)
+        logging.info(f"Opened PDF {pdf_path} with PyMuPDF. Pages: {len(doc)}")
 
-        logging.info(f"Converting PDF {pdf_path} using Poppler path: {path_to_use}")
-        images = convert_from_path(pdf_path, poppler_path=path_to_use)
+        # Check if PDF is empty
+        if len(doc) == 0:
+            logging.warning(f"PDF file {pdf_path} has 0 pages. No images will be generated.")
+            doc.close()
+            return []
 
+        # Iterate through pages and save as PNG
+        for i, page in enumerate(doc):
+            try:
+                # Render page to a pixmap (higher DPI for better quality)
+                pix = page.get_pixmap(dpi=200) 
+                image_path = os.path.join(output_dir, f"page_{i+1}.png")
+                pix.save(image_path, "png")
+                image_paths.append(image_path)
+                logging.debug(f"Saved page {i+1} to {image_path}")
+            except Exception as page_err:
+                 logging.error(f"Error processing page {i+1} of {pdf_path}: {page_err}", exc_info=True)
+                 # Decide whether to continue or raise; continuing for now
+
+        doc.close() # Close the document
+        logging.info(f"Successfully converted PDF {pdf_path} to {len(image_paths)} images in {output_dir}")
+
+    except fitz.fitz.FileNotFoundError: # PyMuPDF specific exception
+        logging.error(f"PDF file not found at path: {pdf_path}")
+        raise # Reraise for the caller
+    except fitz.fitz.FZ_ERROR_GENERIC as fitz_err: # Catch generic MuPDF errors
+         logging.error(f"PyMuPDF error processing file {pdf_path}: {fitz_err}", exc_info=True)
+         # Check if it's a known issue like needing password
+         if "needs a password" in str(fitz_err).lower():
+             logging.error(f"The PDF file {pdf_path} is password protected.")
+         # Raise a generic error for the caller
+         raise RuntimeError(f"Failed to process PDF {pdf_path} with PyMuPDF.") from fitz_err
     except Exception as e:
         # Catch other potential errors during conversion
-        logging.error(f"Error during PDF conversion process: {e}", exc_info=True)
+        logging.error(f"Unexpected error during PDF conversion process with PyMuPDF: {e}", exc_info=True)
         raise # Reraise the exception to be caught by the caller
-    
-    image_paths = []
-    for i, image in enumerate(images):
-        image_path = os.path.join(output_dir, f"page_{i+1}.png")
-        image.save(image_path, "PNG")
-        image_paths.append(image_path)
     
     return image_paths
 
@@ -64,9 +71,10 @@ def pdf_to_images(pdf_path, output_dir, poppler_path=None):
 #     base_name = os.path.basename(input_pdf_path)
 #     file_name_without_ext, _ = os.path.splitext(base_name)
 #     output_directory = f"{file_name_without_ext}_imgs"
-
+# 
 #     print(f"Converting {input_pdf_path} to images in {output_directory}...")
-#     image_paths = pdf_to_images(input_pdf_path, output_directory)
+#     # Call the updated function without poppler_path
+#     image_paths = pdf_to_images(input_pdf_path, output_directory) 
 #     print(f"Successfully converted PDF to {len(image_paths)} images:")
 #     for path in image_paths:
 #         print(f"  - {path}")

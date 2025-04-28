@@ -15,3 +15,5 @@ dhcr_small.pdf
 dhcr_tiny.pdf
 dhcr.pdf
 .vercel/
+Dockerfile
+cloudbuild.yaml
