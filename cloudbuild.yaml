@@ -1,0 +1,15 @@
+# --- Set Cloud Build Variables ---
+
+export PROJECT_ID="rgbo-457919"
+export REGION="us-central1" # GCP region
+export CONNECTION_NAME="gh-mattsavoca" # The connection name assigned in Cloud Build
+export REPO_NAME="mattsavoca-rgbo" # The repo name assigned in Cloud Build
+export BRANCH_NAME="main" # The branch name in GH
+
+# --- The Command ---
+gcloud builds submit \
+  --project="${PROJECT_ID}" \
+  --region="${REGION}" \
+  --config=cloudbuild.yaml \
+  --substitutions=REPO_NAME="${REPO_NAME}",BRANCH_NAME="${BRANCH_NAME}" \
+  --no-source # We specify source implicitly via substitutions and cloudbuild.yaml context

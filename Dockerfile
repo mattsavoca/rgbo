@@ -1,5 +1,5 @@
 # Use an official Python image. Using bookworm allows easy install of poppler
-FROM python:3.11-slim-bookworm
+FROM python:3.12-slim-bookworm
 
 # Install poppler-utils (needed by pdf2image) and cleanup apt cache
 RUN apt-get update && \
