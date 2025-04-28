@@ -1,12 +1,9 @@
 # requirements.txt
-python-fasthtml
+fasthtml
 httpx
-pydantic
-google-genai  #  >= 0.7.0 to ensure a recent version for latest features/fixes?
-google-api-core
-pymupdf
-#pdf2image
-#Pillow
 polars
-python-dotenv # For local development convenience
-requests # pdf_pipeline might use it, keep for now
+python-dotenv
+PyMuPDF
+google-generativeai
+pydantic
+uvicorn

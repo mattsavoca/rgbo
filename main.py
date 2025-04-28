@@ -33,17 +33,40 @@ hdrs = (
     Script(src="https://unpkg.com/htmx.org@1.9.10"),
     Script(src="https://unpkg.com/hyperscript.org@0.9.12"),
     Link(rel="stylesheet", href="https://unpkg.com/pico.css@latest"),
+    # Add CSS for the HTMX spinner indicator
+    Style("""
+        .htmx-indicator {
+            display: none; /* Hidden by default */
+            width: 1.5em;  /* Adjust size as needed */
+            height: 1.5em;
+            border: 2px solid currentColor;
+            border-right-color: transparent;
+            border-radius: 50%;
+            animation: spin .75s linear infinite;
+            vertical-align: middle; /* Align nicely with button text */
+            margin-left: 0.5em; /* Space it from the button */
+        }
+        /* Show the indicator when HTMX adds the htmx-request class to it */
+        .htmx-request.htmx-indicator {
+            display: inline-block;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    """)
 )
 # Note: No explicit default backend URL needed now
 app, rt = fast_app(hdrs=hdrs)
 
 # --- Constants and Setup ---
-# Directory for temporary uploads within the container
-UPLOAD_DIR = Path("temp_uploads")
-UPLOAD_DIR.mkdir(exist_ok=True)
-# Directory for processed output within the container (ephemeral)
-OUTPUT_DIR = Path("processed_data")
-OUTPUT_DIR.mkdir(exist_ok=True)
+# Vercel (and other serverless environments) typically only allow writing to /tmp
+TMP_ROOT = Path("/tmp")
+# Directory for temporary uploads within the /tmp directory
+UPLOAD_DIR = TMP_ROOT / "temp_uploads"
+UPLOAD_DIR.mkdir(exist_ok=True, parents=True) # Added parents=True for robustness
+# Directory for processed output within the /tmp directory (ephemeral)
+OUTPUT_DIR = TMP_ROOT / "processed_data"
+OUTPUT_DIR.mkdir(exist_ok=True, parents=True) # Added parents=True for robustness
 
 TEMP_PDF_PATH = UPLOAD_DIR / "uploaded_pdf.pdf"
 MAX_FILE_SIZE_MB = 25
@@ -81,8 +104,9 @@ def get_submit_button(enabled: bool, message: str | None = None) -> Div:
 
     return Div(
         Button("Submit", **btn_attrs),
-        # Simple loading indicator
-        Span(id="spinner", cls="htmx-indicator", style="margin-left: 1em;")(" Processing..."),
+        # Simple loading indicator - now styled via CSS in headers
+        # It's hidden by default and shown when htmx-request class is added
+        Span(id="spinner", cls="htmx-indicator"), # No default text needed
         P(message, cls="warning") if message and not enabled else '',
         P(message, cls="success") if message and enabled else '',
         id="submit-button-area" # Ensure ID is present for swapping
@@ -112,10 +136,61 @@ def get_initial_form_area() -> Form:
         ),
         # Placeholder for the submit button, initially disabled
         get_submit_button(enabled=False, message="Select a PDF file to upload."),
+        # Div for simulated log output
+        Div(id="log-output", style="margin-top: 1em; border: 1px solid #ccc; padding: 0.5em; min-height: 50px; font-family: monospace; white-space: pre-wrap; overflow-y: auto; background-color: #f8f8f8;"),
         # Reset button
         Button("Reset", type="button", hx_post="/reset", hx_target="#main-content", hx_swap="innerHTML", cls="secondary"),
         # Area to display results later
         Div(id="results-area"),
+        # Script for dynamic progress feedback
+        Script("""
+            let timerInterval = null;
+            let startTime = null;
+            const form = document.getElementById('upload-form');
+            const logOutput = document.getElementById('log-output');
+
+            if (form && logOutput) {
+                form.addEventListener('htmx:beforeRequest', function(evt) {
+                    // Check if the request is going to /submit
+                    if (evt.detail.requestConfig.path === '/submit') {
+                        logOutput.textContent = 'Processing started...';
+                        startTime = Date.now();
+                        // Clear previous interval if any (safety check)
+                        if (timerInterval) clearInterval(timerInterval);
+
+                        timerInterval = setInterval(function() {
+                            const elapsedSeconds = Math.round((Date.now() - startTime) / 1000);
+                            logOutput.textContent = `Processing... Elapsed time: ${elapsedSeconds} seconds.`;
+                        }, 1000); // Update every second
+                    }
+                });
+
+                form.addEventListener('htmx:afterRequest', function(evt) {
+                    // Stop timer only if it was started for the /submit request
+                    if (evt.detail.requestConfig.path === '/submit') {
+                         if (timerInterval) {
+                            clearInterval(timerInterval);
+                            timerInterval = null;
+                         }
+                         // Optionally clear or update log message on completion/error
+                         // logOutput.textContent = 'Processing finished.'; // Or handled by server response swap
+                    }
+                });
+
+                form.addEventListener('htmx:responseError', function(evt) {
+                    // Also stop timer on error
+                    if (evt.detail.requestConfig.path === '/submit') {
+                         if (timerInterval) {
+                            clearInterval(timerInterval);
+                            timerInterval = null;
+                         }
+                         logOutput.textContent = 'An error occurred during processing.';
+                    }
+                });
+            } else {
+                console.error('Could not find form or log output element for timer script.');
+            }
+        """),
         # Required for file uploads
         enctype="multipart/form-data",
         # Target the whole content area for reset
@@ -297,7 +372,8 @@ async def post_submit(
         csv_filename_suggestion = "download.csv"
         if relative_csv_path:
             # Download link points to *this* app's /download route
-            csv_download_url = f"/download?path={relative_csv_path}"
+            # Use as_posix() for URL compatibility
+            csv_download_url = f"/download?path={relative_csv_path.as_posix()}"
             csv_filename_suggestion = Path(relative_csv_path).name
 
         # --- CSV Preview Table Generation ---
@@ -331,7 +407,8 @@ async def post_submit(
              img_list_items = []
              for img_path in relative_img_paths:
                  # Download link points to *this* app's /download route
-                 img_download_url = f"/download?path={img_path}"
+                 # Use as_posix() for URL compatibility
+                 img_download_url = f"/download?path={img_path.as_posix()}"
                  img_name = Path(img_path).name
                  img_list_items.append(
                      Li(A(img_name, href=img_download_url, download=img_name))
