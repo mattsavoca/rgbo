@@ -2,6 +2,7 @@ scratch/
 dhcr_output_csvs/
 sdk/
 __pycache__/
+archive/
 .venv/
 scope/
 .env
