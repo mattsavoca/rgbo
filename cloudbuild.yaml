@@ -1,22 +1,6 @@
 # cloudbuild.yaml
-
-# Define the source repository using the connection in us-east4
-source:
-  gitSource:
-    name: 'projects/rgbo-457919/locations/us-east4/connections/gh-mattsavoca/repositories/mattsavoca-rgbo'
-    revision: 'main' # Specify the branch (or commit SHA, tag) here
-    dir: '.' # Use the root directory of the repository
-
-# Define the build steps
 steps:
-  - name: 'gcr.io/cloud-builders/docker'
-    # Build using the Dockerfile in the root (dir: '.') specified above
-    args: [ 'build', '-t', 'us-central1-docker.pkg.dev/rgbo-457919/rgbo-repo/dhcr-processor:latest', '.' ]
-
-# Specify the image to push to Artifact Registry
+- name: 'gcr.io/cloud-builders/docker'
+  args: [ 'build', '-t', 'us-central1-docker.pkg.dev/rgbo-457919/rgbo-repo/dhcr-processor:latest', '.' ]
 images:
-  - 'us-central1-docker.pkg.dev/rgbo-457919/rgbo-repo/dhcr-processor:latest'
-
-# Optional: Explicitly set build options if needed (timeout, machineType, etc.)
-# options:
-#   machineType: 'E2_HIGHCPU_8' # Example: Specify a machine type if needed
+- 'us-central1-docker.pkg.dev/rgbo-457919/rgbo-repo/dhcr-processor:latest'
