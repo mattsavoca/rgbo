@@ -2,7 +2,7 @@ import gradio as gr
 from datetime import datetime, date
 import logging
 import polars as pl # Use polars for consistency if needed by imported functions
-from typing import Tuple # Import Tuple for type hinting
+from typing import Tuple, Dict, Optional # Import Tuple for type hinting, Dict/Optional for footnote lookup
 
 # Configure logging for this module
 log = logging.getLogger(__name__)
@@ -17,6 +17,16 @@ try:
     # Load RGBO data once when the module is loaded
     rgb_data = load_rgb_orders(RGBO_CSV_PATH)
     log.info(f"RGBO data loaded successfully for the calculator tab. Shape: {rgb_data.shape}")
+    # Ensure date columns are converted immediately after loading
+    if rgb_data is not None and not rgb_data.is_empty():
+        if rgb_data["beginning_date"].dtype != pl.Date:
+             try:
+                log.info("Converting date columns in global RGBO data to Date type...")
+                rgb_data = rgb_data.with_columns(pl.col(["beginning_date", "end_date"]).str.strptime(pl.Date, "%Y-%m-%d", strict=False))
+                log.info("Date columns converted successfully.")
+             except Exception as e:
+                 log.error(f"Failed to convert date columns in RGBO data: {e}", exc_info=True)
+                 rgb_data = None # Mark data as unusable if conversion fails
 except FileNotFoundError as e:
     log.error(f"Fatal Error: RGBO CSV file not found at expected path ({RGBO_CSV_PATH}). Calculator cannot function. Error: {e}", exc_info=True)
     rgb_data = None # Indicate data loading failure
@@ -35,6 +45,26 @@ except Exception as e:
     DATE_RANGES = {}
 
 
+# --- Load Footnotes Data ---
+FOOTNOTES_CSV_PATH = "footnotes.csv"
+footnotes_dict: Dict[str, str] = {}
+try:
+    footnotes_df = pl.read_csv(FOOTNOTES_CSV_PATH).with_columns(pl.col("footnote_no").cast(pl.Utf8))
+    footnotes_dict = dict(zip(footnotes_df["footnote_no"].to_list(), footnotes_df["note"].to_list()))
+    log.info(f"Successfully loaded {len(footnotes_dict)} footnotes from {FOOTNOTES_CSV_PATH}.")
+except FileNotFoundError:
+    log.error(f"Footnotes file not found at {FOOTNOTES_CSV_PATH}. Footnote display will be unavailable.", exc_info=True)
+except Exception as e:
+    log.error(f"Error loading footnotes from {FOOTNOTES_CSV_PATH}: {e}", exc_info=True)
+
+
+def get_footnote_text(footnote_num_str: Optional[str]) -> str:
+    """Looks up footnote text by number string. Handles None or missing keys."""
+    if footnote_num_str is None:
+        return ""
+    return footnotes_dict.get(footnote_num_str.strip(), f"Note {footnote_num_str} not found.")
+
+
 def format_result(result):
     """Formats the numeric result as a percentage string or returns the string directly."""
     if isinstance(result, (int, float)):
@@ -50,29 +80,33 @@ def calculate_vacancy_allowance_interactive(
     had_vacancy_allowance_in_prev_12_mo: str,
     previous_preferential_rent_has_value: str,
     tenant_tenure_years: float # Gradio Number component provides float
-) -> Tuple[str, str]: # <--- Updated return type hint
+) -> Tuple[str, str, str]: # <--- Updated return type hint
     """
     Calculates vacancy allowance based on user inputs, following the flowchart image logic.
-    Returns a tuple containing the formatted result string and a string explaining the calculation steps.
+    Returns a tuple containing the formatted result string, a string explaining the calculation steps,
+    and a string with relevant footnotes and guideline notes.
     """
     log.info("--- Starting Interactive Calculation ---")
     log.info(f"Inputs: Status='{apartment_status}', NewTenant='{is_new_tenant}', Term='{term_length_str}', "
              f"StartDate='{lease_start_date}', PrevVacAllow='{had_vacancy_allowance_in_prev_12_mo}', "
              f"PrevPrefRent='{previous_preferential_rent_has_value}', Tenure='{tenant_tenure_years}'")
     explanation_steps = ["Starting Calculation..."] # Initialize explanation log
+    notes_details = ["Relevant Notes/Footnotes:"] # Initialize notes log
 
     if rgb_data is None or rgb_data.is_empty():
         log.error("Calculation aborted: RGBO data is not loaded.")
         error_msg = "Error: RGBO data failed to load. Cannot proceed." # Simplified error
         explanation_steps.append(error_msg)
-        return error_msg, "\n".join(explanation_steps)
+        notes_details.append("N/A due to loading error.")
+        return error_msg, "\n".join(explanation_steps), "\n".join(notes_details)
     explanation_steps.append("RGBO data loaded successfully.")
 
     if lease_start_date is None:
         log.warning("Calculation aborted: Lease Start Date is required.")
         error_msg = "Error: Lease Start Date is required."
         explanation_steps.append(error_msg)
-        return error_msg, "\n".join(explanation_steps)
+        notes_details.append("N/A due to missing date.")
+        return error_msg, "\n".join(explanation_steps), "\n".join(notes_details)
     # explanation_steps.append(f"Lease Start Date provided: {lease_start_date}") # Removed this intermediate step
 
     # Ensure lease_start_date is a date object
@@ -95,7 +129,8 @@ def calculate_vacancy_allowance_interactive(
              log.error(f"Could not convert float timestamp {original_input_date_repr} to date: {e}", exc_info=True)
              error_msg = f"Error: Invalid Lease Start Date timestamp: {original_input_date_repr}"
              explanation_steps.append(error_msg)
-             return error_msg, "\n".join(explanation_steps)
+             notes_details.append("N/A due to invalid date.")
+             return error_msg, "\n".join(explanation_steps), "\n".join(notes_details)
     elif not isinstance(lsd, date):
         try:
              lsd = datetime.strptime(str(lsd), "%Y-%m-%d").date()
@@ -105,7 +140,8 @@ def calculate_vacancy_allowance_interactive(
             log.error(f"Could not parse lease_start_date: {original_input_date_repr} (Type: {type(lease_start_date)})")
             error_msg = f"Error: Invalid Lease Start Date format: {original_input_date_repr}"
             explanation_steps.append(error_msg)
-            return error_msg, "\n".join(explanation_steps)
+            notes_details.append("N/A due to invalid date.")
+            return error_msg, "\n".join(explanation_steps), "\n".join(notes_details)
     else: # Already a date object
         explanation_steps.append(f"Lease Start Date provided: {lsd}")
         date_conversion_successful = True
@@ -114,30 +150,117 @@ def calculate_vacancy_allowance_interactive(
     if not date_conversion_successful: # Defensive check
         error_msg = "Error: Lease Start Date could not be processed."
         explanation_steps.append(error_msg)
-        return error_msg, "\n".join(explanation_steps)
+        notes_details.append("N/A due to date processing error.")
+        return error_msg, "\n".join(explanation_steps), "\n".join(notes_details)
     # --- End Date Conversion ---
 
     log.info(f"Fetching rates for date: {lsd}")
     explanation_steps.append(f"Fetching RGBO rates for date: {lsd}...")
-    rates = get_rates_for_date(rgb_data, lsd)
-    if rates is None:
-        log.warning(f"No RGBO rates found for date: {lsd}")
-        error_msg = f"Indeterminable: No RGBO rates found for lease start date {lsd}"
+    # --- Find Relevant RGBO Row ---
+    try:
+        # Filter the DataFrame to find the row where lsd falls between beginning_date and end_date
+        # Convert date columns to date type first if they aren't already
+        # if rgb_data["beginning_date"].dtype != pl.Date:
+        #     rgb_data = rgb_data.with_columns(pl.col(["beginning_date", "end_date"]).str.strptime(pl.Date, "%Y-%m-%d", strict=False))
+
+        relevant_orders = rgb_data.filter(
+            (pl.col("beginning_date") <= lsd) & (pl.col("end_date") >= lsd)
+        )
+
+        if relevant_orders.is_empty():
+            log.warning(f"No RGBO rates found for date: {lsd}")
+            error_msg = f"Indeterminable: No RGBO order found covering lease start date {lsd}"
+            explanation_steps.append(error_msg)
+            notes_details.append("N/A - No matching RGBO order found.")
+            return error_msg, "\n".join(explanation_steps), "\n".join(notes_details)
+
+        # Assuming only one order applies per date. If multiple, log warning and take the first.
+        if len(relevant_orders) > 1:
+            log.warning(f"Multiple RGBO orders ({relevant_orders['order_number'].to_list()}) found for {lsd}. Using the first one: {relevant_orders[0, 'order_number']}")
+        
+        order_row = relevant_orders[0] # Get the first row as a Struct/Row object
+        order_dict = order_row.to_dicts()[0] # Convert the row to a dictionary for easier access
+
+        log.info(f"Found matching RGBO Order: {order_dict.get('order_number', 'N/A')}")
+        explanation_steps.append(f"Successfully retrieved RGBO Order {order_dict.get('order_number', 'N/A')} covering {lsd}.")
+
+    except Exception as e:
+        log.error(f"Error filtering RGBO data for date {lsd}: {e}", exc_info=True)
+        error_msg = f"Error: Failed to process RGBO data for date {lsd}."
         explanation_steps.append(error_msg)
-        return error_msg, "\n".join(explanation_steps)
-    explanation_steps.append(f"Successfully retrieved rates for {lsd}.")
+        notes_details.append("N/A due to data processing error.")
+        return error_msg, "\n".join(explanation_steps), "\n".join(notes_details)
+    # --- End Finding RGBO Row ---
 
-    one_yr_rate = rates.get('one_year_rate', 0.0)
-    two_yr_rate = rates.get('two_year_rate', 0.0)
-    vac_lease_rate = rates.get('vacancy_lease_rate', 0.0) # May be null/None
 
-    # Handle potential None values
+    # Extract rates and notes from the dictionary
+    one_yr_rate = order_dict.get('one_year_rate', 0.0)
+    two_yr_rate = order_dict.get('two_year_rate', 0.0)
+    vac_lease_rate = order_dict.get('vacancy_lease_rate') # Keep as None if missing initially
+    one_yr_footnote = order_dict.get('one_year_footnote')
+    two_yr_footnote = order_dict.get('two_year_footnote')
+    vac_lease_footnotes = order_dict.get('vacancy_lease_footnotes')
+    guideline_note = order_dict.get('guideline_note')
+    guideline_note_footnotes = order_dict.get('guideline_note_footnotes')
+    order_number = order_dict.get('order_number', 'Unknown') # Get order number for context
+
+
+    # Handle potential None/Null values for rates
     one_yr_rate = 0.0 if one_yr_rate is None else float(one_yr_rate)
     two_yr_rate = 0.0 if two_yr_rate is None else float(two_yr_rate)
+    # Vacancy lease rate requires special handling - 0.0 might be a valid rate
+    has_specific_vac_rate = vac_lease_rate is not None
     vac_lease_rate = 0.0 if vac_lease_rate is None else float(vac_lease_rate)
 
-    log.info(f"Rates found: 1yr={one_yr_rate:.4f}, 2yr={two_yr_rate:.4f}, VacLease={vac_lease_rate:.4f}")
-    explanation_steps.append(f"Rates for {lsd}: 1-Year = {one_yr_rate*100:.2f}%, 2-Year = {two_yr_rate*100:.2f}%, Vacancy Lease = {vac_lease_rate*100:.2f}%")
+    log.info(f"Rates from Order {order_number}: 1yr={one_yr_rate:.4f}, 2yr={two_yr_rate:.4f}, VacLease={vac_lease_rate:.4f} (Specific Rate Present: {has_specific_vac_rate})")
+    explanation_steps.append(f"Rates for Order {order_number}: 1-Year = {one_yr_rate*100:.2f}%, 2-Year = {two_yr_rate*100:.2f}%, Specific Vacancy Lease Rate = {f'{vac_lease_rate*100:.2f}%' if has_specific_vac_rate else 'N/A'}")
+
+    # --- Compile Notes/Footnotes ---
+    active_footnotes = set()
+    notes_details = ["Relevant Notes/Footnotes:"] # Initialize notes log
+    active_footnotes: Dict[str, list[str]] = {} # Footnote Num -> List of Sources
+    notes_details = [] # Initialize notes log - Start empty
+
+    def add_footnote(note_num_str: Optional[str], source_name: str):
+        """Helper to add footnote numbers and their source to the dictionary."""
+        if note_num_str is None: return
+        for fn in str(note_num_str).split(','):
+            fn_clean = fn.strip()
+            if fn_clean:
+                if fn_clean not in active_footnotes:
+                    active_footnotes[fn_clean] = []
+                # Avoid adding duplicate source names for the same footnote
+                if source_name not in active_footnotes[fn_clean]:
+                    active_footnotes[fn_clean].append(source_name)
+
+    notes_details.append(f"**RGBO Order:** {order_number}")
+    if guideline_note:
+        notes_details.append(f"**Guideline Note:** {guideline_note}")
+        add_footnote(guideline_note_footnotes, "Guideline Note")
+
+    # Add footnotes based on which rate *might* be used in the logic below
+    # Use the helper function to correctly associate the footnote with its source
+    add_footnote(one_yr_footnote, "1-Year Rate")
+    add_footnote(two_yr_footnote, "2-Year Rate")
+    # Only add vac footnotes if a specific rate was present in the data
+    if has_specific_vac_rate:
+        add_footnote(vac_lease_footnotes, "Vacancy Lease Rate")
+
+    # Remove the original (now redundant) logic that called add_footnote again.
+    # The logic above now handles adding the footnotes with their sources.
+
+    if active_footnotes:
+         notes_details.append("\\n**Applicable Footnotes:**") # Add newline before header
+         # Sort footnotes numerically for consistent order
+         # Sort keys of the dictionary
+         sorted_footnotes = sorted(active_footnotes.keys(), key=lambda x: int(x) if x.isdigit() else float('inf'))
+         for fn_num in sorted_footnotes:
+             # Get sources from the dictionary value
+             sources = ", ".join(active_footnotes[fn_num])
+             note_text = get_footnote_text(fn_num)
+             notes_details.append(f"- **[{fn_num}]** ({sources}): {note_text}") # Include sources in the output
+    else:
+        notes_details.append("No specific footnotes associated with this order's rates or guideline note.")
 
     # --- Flowchart Logic Implementation ---
     try:
@@ -293,18 +416,22 @@ def calculate_vacancy_allowance_interactive(
 
         log.info(f"--- Calculation Complete. Result: {formatted_result} ---")
         explanation_log = "\n".join(explanation_steps)
-        return formatted_result, explanation_log # Return both
+        notes_log = "\n".join(notes_details) # Compile notes log
+
+        return formatted_result, explanation_log, notes_log # Return all three
 
     except KeyError as e:
          log.error(f"Missing date range key: {e}. DATE_RANGES might be incomplete.", exc_info=True)
          error_msg = f"Error: Internal configuration error (missing date range: {e})"
          explanation_steps.append(error_msg)
-         return error_msg, "\n".join(explanation_steps) # Return both
+         notes_details.append("N/A due to configuration error.")
+         return error_msg, "\n".join(explanation_steps), "\n".join(notes_details) # Return all three
     except Exception as e:
         log.error(f"An unexpected error occurred during calculation: {e}", exc_info=True)
         error_msg = f"Error: An unexpected calculation error occurred: {e}"
         explanation_steps.append(error_msg)
-        return error_msg, "\n".join(explanation_steps) # Return both
+        notes_details.append("N/A due to calculation error.")
+        return error_msg, "\n".join(explanation_steps), "\n".join(notes_details) # Return all three
 
 
 # --- Gradio UI Definition ---
@@ -367,6 +494,8 @@ def create_calculator_tab():
         result_output = gr.Textbox(label="Calculated Vacancy Allowance", interactive=False)
         # Add the new Textbox for the explanation log
         logic_output = gr.Textbox(label="Calculation Logic", interactive=False, lines=10)
+        # Add a new Markdown component for notes/footnotes
+        notes_output = gr.Markdown(label="Relevant Guideline Notes & Footnotes", value="Notes will appear here after calculation.")
 
 
         # Event Handler
@@ -381,7 +510,7 @@ def create_calculator_tab():
                 prev_pref_rent_input,
                 tenant_tenure_input
             ],
-            outputs=[result_output, logic_output] # Update outputs to include the new textbox
+            outputs=[result_output, logic_output, notes_output] # Update outputs to include the new textbox and notes
         )
 
     # Return the Blocks object so it can be rendered in the main app
