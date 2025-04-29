@@ -1,9 +1,10 @@
 # requirements.txt
-fasthtml
+python-fasthtml
 httpx
 polars
 python-dotenv
 PyMuPDF
-google-generativeai
+google-genai
 pydantic
 uvicorn
+gradio
