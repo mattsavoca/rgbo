@@ -79,7 +79,9 @@ def calculate_vacancy_allowance_interactive(
     lease_start_date: date, # Gradio Date component provides date object
     had_vacancy_allowance_in_prev_12_mo: str,
     previous_preferential_rent_has_value: str,
-    tenant_tenure_years: float # Gradio Number component provides float
+    tenant_tenure_years: float, # Gradio Number component provides float
+    is_first_year: str,  # New parameter for RGBO Order #52 handling
+    is_first_half: str   # New parameter for RGBO Order #53 handling
 ) -> Tuple[str, str, str]: # <--- Updated return type hint
     """
     Calculates vacancy allowance based on user inputs, following the flowchart image logic.
@@ -89,7 +91,8 @@ def calculate_vacancy_allowance_interactive(
     log.info("--- Starting Interactive Calculation ---")
     log.info(f"Inputs: Status='{apartment_status}', NewTenant='{is_new_tenant}', Term='{term_length_str}', "
              f"StartDate='{lease_start_date}', PrevVacAllow='{had_vacancy_allowance_in_prev_12_mo}', "
-             f"PrevPrefRent='{previous_preferential_rent_has_value}', Tenure='{tenant_tenure_years}'")
+             f"PrevPrefRent='{previous_preferential_rent_has_value}', Tenure='{tenant_tenure_years}', "
+             f"IsFirstYear='{is_first_year}', IsFirstHalf='{is_first_half}'")
     explanation_steps = ["Starting Calculation..."] # Initialize explanation log
     notes_details = ["Relevant Notes/Footnotes:"] # Initialize notes log
 
@@ -109,44 +112,59 @@ def calculate_vacancy_allowance_interactive(
         return error_msg, "\n".join(explanation_steps), "\n".join(notes_details)
     # explanation_steps.append(f"Lease Start Date provided: {lease_start_date}") # Removed this intermediate step
 
-    # Ensure lease_start_date is a date object
-    lsd = lease_start_date
-    original_input_date_repr = str(lease_start_date) # Store original representation for logging
-
     # --- Date Conversion Logic ---
     date_conversion_successful = False
-    if isinstance(lsd, datetime):
-        lsd = lsd.date()
-        explanation_steps.append(f"Lease Start Date provided: {lsd} (from datetime)")
-        date_conversion_successful = True
-    elif isinstance(lsd, float):
-        try:
-            lsd = datetime.fromtimestamp(lsd).date()
-            log.info(f"Converted float timestamp {original_input_date_repr} to date {lsd}")
-            explanation_steps.append(f"Lease Start Date provided: {lsd} (from timestamp {original_input_date_repr})")
+    # Store original representation for logging
+    original_input_date_repr = str(lease_start_date)
+    lsd = lease_start_date  # Start with the original input
+    
+    try:
+        # Handle various date input formats
+        if isinstance(lsd, datetime):
+            lsd = lsd.date()
+            explanation_steps.append(f"Lease Start Date provided: {lsd} (from datetime)")
             date_conversion_successful = True
-        except (OSError, ValueError) as e:
-             log.error(f"Could not convert float timestamp {original_input_date_repr} to date: {e}", exc_info=True)
-             error_msg = f"Error: Invalid Lease Start Date timestamp: {original_input_date_repr}"
-             explanation_steps.append(error_msg)
-             notes_details.append("N/A due to invalid date.")
-             return error_msg, "\n".join(explanation_steps), "\n".join(notes_details)
-    elif not isinstance(lsd, date):
-        try:
-             lsd = datetime.strptime(str(lsd), "%Y-%m-%d").date()
-             explanation_steps.append(f"Lease Start Date provided: {lsd} (from string '{original_input_date_repr}')")
-             date_conversion_successful = True
-        except (ValueError, TypeError):
-            log.error(f"Could not parse lease_start_date: {original_input_date_repr} (Type: {type(lease_start_date)})")
-            error_msg = f"Error: Invalid Lease Start Date format: {original_input_date_repr}"
+        elif isinstance(lsd, date):
+            # Already a date object
+            explanation_steps.append(f"Lease Start Date provided: {lsd}")
+            date_conversion_successful = True
+        elif isinstance(lsd, (float, int)):
+            try:
+                lsd = datetime.fromtimestamp(lsd).date()
+                log.info(f"Converted numeric timestamp {original_input_date_repr} to date {lsd}")
+                explanation_steps.append(f"Lease Start Date provided: {lsd} (from timestamp {original_input_date_repr})")
+                date_conversion_successful = True
+            except (OSError, ValueError, OverflowError) as e:
+                log.error(f"Could not convert timestamp {original_input_date_repr} to date: {e}", exc_info=True)
+                error_msg = f"Error: Invalid Lease Start Date timestamp: {original_input_date_repr}"
+                explanation_steps.append(error_msg)
+                notes_details.append("N/A due to invalid date.")
+                return error_msg, "\n".join(explanation_steps), "\n".join(notes_details)
+        elif isinstance(lsd, str):
+            try:
+                lsd = datetime.strptime(lsd, "%Y-%m-%d").date()
+                explanation_steps.append(f"Lease Start Date provided: {lsd} (from string '{original_input_date_repr}')")
+                date_conversion_successful = True
+            except ValueError:
+                log.error(f"Could not parse lease_start_date string: {original_input_date_repr}")
+                error_msg = f"Error: Invalid Lease Start Date format: {original_input_date_repr}"
+                explanation_steps.append(error_msg)
+                notes_details.append("N/A due to invalid date.")
+                return error_msg, "\n".join(explanation_steps), "\n".join(notes_details)
+        else:
+            log.error(f"Unsupported date type: {type(lease_start_date)} - Value: {original_input_date_repr}")
+            error_msg = f"Error: Unsupported Lease Start Date format: {original_input_date_repr}"
             explanation_steps.append(error_msg)
-            notes_details.append("N/A due to invalid date.")
+            notes_details.append("N/A due to unsupported date format.")
             return error_msg, "\n".join(explanation_steps), "\n".join(notes_details)
-    else: # Already a date object
-        explanation_steps.append(f"Lease Start Date provided: {lsd}")
-        date_conversion_successful = True
-
-    # Check if conversion was successful before proceeding (should always be true if no error returned)
+    except Exception as e:
+        log.error(f"Unexpected error processing lease_start_date: {e}", exc_info=True)
+        error_msg = "Error: Failed to process Lease Start Date"
+        explanation_steps.append(error_msg)
+        notes_details.append("N/A due to date processing error.")
+        return error_msg, "\n".join(explanation_steps), "\n".join(notes_details)
+    
+    # Check if conversion was successful
     if not date_conversion_successful: # Defensive check
         error_msg = "Error: Lease Start Date could not be processed."
         explanation_steps.append(error_msg)
@@ -203,7 +221,16 @@ def calculate_vacancy_allowance_interactive(
     guideline_note = order_dict.get('guideline_note')
     guideline_note_footnotes = order_dict.get('guideline_note_footnotes')
     order_number = order_dict.get('order_number', 'Unknown') # Get order number for context
+    
+    # Extract additional rate data for RGBO Order #52 handling
+    two_year_first_year_rate = order_dict.get('two_year_first_year_rate')
+    two_year_first_year_rate_footnotes = order_dict.get('two_year_first_year_rate_footnotes')
+    two_year_second_year_rate = order_dict.get('two_year_second_year_rate')
+    two_year_second_year_rate_footnotes = order_dict.get('two_year_second_year_rate_footnotes')
 
+    # Extract additional rate data for RGBO Order #53 handling
+    one_year_first_half_rate = order_dict.get('one_year_first_half_rate')
+    one_year_second_half_rate = order_dict.get('one_year_second_half_rate')
 
     # Handle potential None/Null values for rates
     one_yr_rate = 0.0 if one_yr_rate is None else float(one_yr_rate)
@@ -211,9 +238,27 @@ def calculate_vacancy_allowance_interactive(
     # Vacancy lease rate requires special handling - 0.0 might be a valid rate
     has_specific_vac_rate = vac_lease_rate is not None
     vac_lease_rate = 0.0 if vac_lease_rate is None else float(vac_lease_rate)
+    
+    # Handle potential None/Null values for additional rates (Order #52)
+    two_year_first_year_rate = 0.0 if two_year_first_year_rate is None else float(two_year_first_year_rate)
+    two_year_second_year_rate = 0.0 if two_year_second_year_rate is None else float(two_year_second_year_rate)
+
+    # Handle potential None/Null values for additional rates (Order #53)
+    one_year_first_half_rate = 0.0 if one_year_first_half_rate is None else float(one_year_first_half_rate)
+    one_year_second_half_rate = 0.0 if one_year_second_half_rate is None else float(one_year_second_half_rate)
 
     log.info(f"Rates from Order {order_number}: 1yr={one_yr_rate:.4f}, 2yr={two_yr_rate:.4f}, VacLease={vac_lease_rate:.4f} (Specific Rate Present: {has_specific_vac_rate})")
-    explanation_steps.append(f"Rates for Order {order_number}: 1-Year = {one_yr_rate*100:.2f}%, 2-Year = {two_yr_rate*100:.2f}%, Specific Vacancy Lease Rate = {f'{vac_lease_rate*100:.2f}%' if has_specific_vac_rate else 'N/A'}")
+    
+    # Additional logging for RGBO Order #52 special rates
+    if order_number == "52":
+        log.info(f"Order #52 Special Rates: 2yr-1st={two_year_first_year_rate:.4f}, 2yr-2nd={two_year_second_year_rate:.4f}")
+        explanation_steps.append(f"Rates for Order {order_number}: 1-Year = {one_yr_rate*100:.2f}%, 2-Year = {two_yr_rate*100:.2f}%, First Year of 2-Year = {two_year_first_year_rate*100:.2f}%, Second Year of 2-Year = {two_year_second_year_rate*100:.2f}%, Specific Vacancy Lease Rate = {f'{vac_lease_rate*100:.2f}%' if has_specific_vac_rate else 'N/A'}")
+    # Additional logging for RGBO Order #53 special rates
+    elif order_number == "53":
+        log.info(f"Order #53 Special Rates: 1yr-1stHalf={one_year_first_half_rate:.4f}, 1yr-2ndHalf={one_year_second_half_rate:.4f}")
+        explanation_steps.append(f"Rates for Order {order_number}: 1-Year = {one_yr_rate*100:.2f}% (First 6 mo: {one_year_first_half_rate*100:.2f}%, Second 6 mo: {one_year_second_half_rate*100:.2f}%), 2-Year = {two_yr_rate*100:.2f}%, Specific Vacancy Lease Rate = {f'{vac_lease_rate*100:.2f}%' if has_specific_vac_rate else 'N/A'}")
+    else:
+        explanation_steps.append(f"Rates for Order {order_number}: 1-Year = {one_yr_rate*100:.2f}%, 2-Year = {two_yr_rate*100:.2f}%, Specific Vacancy Lease Rate = {f'{vac_lease_rate*100:.2f}%' if has_specific_vac_rate else 'N/A'}")
 
     # --- Compile Notes/Footnotes ---
     active_footnotes = set()
@@ -241,16 +286,25 @@ def calculate_vacancy_allowance_interactive(
     # Add footnotes based on which rate *might* be used in the logic below
     # Use the helper function to correctly associate the footnote with its source
     add_footnote(one_yr_footnote, "1-Year Rate")
-    add_footnote(two_yr_footnote, "2-Year Rate")
+    
+    # Special handling for footnotes based on term length and RGBO order
+    if term_length_str == "1":
+        add_footnote(one_yr_footnote, "1-Year Rate")
+    elif term_length_str == "2+":
+        if order_number == "52":
+            if is_first_year == "Yes":
+                add_footnote(two_year_first_year_rate_footnotes, "2-Year Rate (Year 1)")
+            else:  # is_first_year == "No"
+                add_footnote(two_year_second_year_rate_footnotes, "2-Year Rate (Year 2)")
+        else:  # other orders
+            add_footnote(two_yr_footnote, "2-Year Rate")
+    
     # Only add vac footnotes if a specific rate was present in the data
     if has_specific_vac_rate:
         add_footnote(vac_lease_footnotes, "Vacancy Lease Rate")
 
-    # Remove the original (now redundant) logic that called add_footnote again.
-    # The logic above now handles adding the footnotes with their sources.
-
     if active_footnotes:
-         notes_details.append("\\n**Applicable Footnotes:**") # Add newline before header
+         notes_details.append('''\n **Applicable Footnotes:**''') # Add newline before header
          # Sort footnotes numerically for consistent order
          # Sort keys of the dictionary
          sorted_footnotes = sorted(active_footnotes.keys(), key=lambda x: int(x) if x.isdigit() else float('inf'))
@@ -287,17 +341,28 @@ def calculate_vacancy_allowance_interactive(
                 if term_length == 1:
                     log.info("Path: Term Length == 1")
                     explanation_steps.append(f"4. Checking Lease Start Date ({lsd}) for 1-Year Term...")
+                    
+                    # Determine the applicable one-year rate based on RGBO order and half
+                    applicable_one_year_rate = one_yr_rate  # Default to standard one-year rate
+                    if order_number == "53":
+                        if is_first_half == "First 6 Months":
+                            applicable_one_year_rate = one_year_first_half_rate
+                            explanation_steps.append(f"--> Using first 6 months rate ({one_year_first_half_rate*100:.2f}%) for Order #53")
+                        else:  # is_first_half == "Second 6 Months"
+                            applicable_one_year_rate = one_year_second_half_rate
+                            explanation_steps.append(f"--> Using second 6 months rate ({one_year_second_half_rate*100:.2f}%) for Order #53")
+                    
                     # Check Lease Start Date (Term 1)
                     if DATE_RANGES["range_83_97"][0] <= lsd <= DATE_RANGES["range_83_97"][1]:
                         log.info("Path: Lease Date 83-97")
                         explanation_steps.append(f"--> Date falls within {DATE_RANGES['range_83_97'][0]} to {DATE_RANGES['range_83_97'][1]}.")
-                        result = one_yr_rate + vac_lease_rate
-                        explanation_steps.append(f"--> Calculation: 1-Year Rate ({one_yr_rate*100:.2f}%) + Vacancy Lease Rate ({vac_lease_rate*100:.2f}%) = {result*100:.2f}%")
+                        result = applicable_one_year_rate + vac_lease_rate
+                        explanation_steps.append(f"--> Calculation: 1-Year Rate ({applicable_one_year_rate*100:.2f}%) + Vacancy Lease Rate ({vac_lease_rate*100:.2f}%) = {result*100:.2f}%")
                     elif DATE_RANGES["range_97_11"][0] <= lsd <= DATE_RANGES["range_97_11"][1]:
                         log.info("Path: Lease Date 97-11")
                         explanation_steps.append(f"--> Date falls within {DATE_RANGES['range_97_11'][0]} to {DATE_RANGES['range_97_11'][1]}.")
-                        result = 0.20 - (two_yr_rate - one_yr_rate)
-                        explanation_steps.append(f"--> Calculation: 20.00% - (2-Year Rate ({two_yr_rate*100:.2f}%) - 1-Year Rate ({one_yr_rate*100:.2f}%)) = {result*100:.2f}%")
+                        result = 0.20 - (two_yr_rate - applicable_one_year_rate)
+                        explanation_steps.append(f"--> Calculation: 20.00% - (2-Year Rate ({two_yr_rate*100:.2f}%) - 1-Year Rate ({applicable_one_year_rate*100:.2f}%)) = {result*100:.2f}%")
                     elif DATE_RANGES["range_11_15"][0] <= lsd <= DATE_RANGES["range_11_15"][1]:
                          log.info("Path: Lease Date 11-15")
                          explanation_steps.append(f"--> Date falls within {DATE_RANGES['range_11_15'][0]} to {DATE_RANGES['range_11_15'][1]}.")
@@ -318,8 +383,8 @@ def calculate_vacancy_allowance_interactive(
                                 explanation_steps.append("--> Result: 0.00%")
                             else: # Pref Rent No
                                 log.info("Path: Pref Rent Has Value == No")
-                                result = 0.20 - (two_yr_rate - one_yr_rate)
-                                explanation_steps.append(f"--> Calculation: 20.00% - (2-Year Rate ({two_yr_rate*100:.2f}%) - 1-Year Rate ({one_yr_rate*100:.2f}%)) = {result*100:.2f}%")
+                                result = 0.20 - (two_yr_rate - applicable_one_year_rate)
+                                explanation_steps.append(f"--> Calculation: 20.00% - (2-Year Rate ({two_yr_rate*100:.2f}%) - 1-Year Rate ({applicable_one_year_rate*100:.2f}%)) = {result*100:.2f}%")
                         else: # Had Vacancy Allowance No
                             log.info("Path: Had Vacancy Allowance Prev 12 Mo == No")
                             tenure = tenant_tenure_years
@@ -335,17 +400,18 @@ def calculate_vacancy_allowance_interactive(
                                 result = 0.15
                                 explanation_steps.append(f"--> Tenure ({tenure}) is 4 years. Result: 15.00%")
                             elif tenure > 4:
-                                result = 0.20 - (two_yr_rate - one_yr_rate)
+                                result = 0.20 - (two_yr_rate - applicable_one_year_rate)
                                 explanation_steps.append(f"--> Tenure ({tenure}) > 4 years.")
-                                explanation_steps.append(f"--> Calculation: 20.00% - (2-Year Rate ({two_yr_rate*100:.2f}%) - 1-Year Rate ({one_yr_rate*100:.2f}%)) = {result*100:.2f}%")
+                                explanation_steps.append(f"--> Calculation: 20.00% - (2-Year Rate ({two_yr_rate*100:.2f}%) - 1-Year Rate ({applicable_one_year_rate*100:.2f}%)) = {result*100:.2f}%")
                             else:
                                 result = "Indeterminable: Invalid Tenure"
                                 explanation_steps.append(f"--> Invalid Tenure value: {tenure}. Result is indeterminable.")
                     elif DATE_RANGES["range_19_present"][0] <= lsd: # Simplified check for present
                         log.info("Path: Lease Date 19-Present")
                         explanation_steps.append(f"--> Date falls within {DATE_RANGES['range_19_present'][0]} to present.")
-                        result = 0.0
-                        explanation_steps.append("--> Result: 0.00%")
+                        # *** FIX: For 1-year leases in this range, use the applicable rate (esp. for Order #53) ***
+                        result = applicable_one_year_rate
+                        explanation_steps.append(f"--> Result: Applicable 1-Year Rate ({result*100:.2f}%)")
                     else:
                         result = "Indeterminable: Lease Start Date out of defined ranges (Term 1)"
                         explanation_steps.append(f"--> Lease Start Date {lsd} does not fall into any defined range for Term 1.")
@@ -353,12 +419,23 @@ def calculate_vacancy_allowance_interactive(
                 elif term_length >= 2:
                     log.info("Path: Term Length == 2+")
                     explanation_steps.append(f"4. Checking Lease Start Date ({lsd}) for 2+ Year Term...")
+                    
+                    # Determine the applicable two-year rate based on RGBO order and year
+                    applicable_two_year_rate = two_yr_rate  # Default to standard two-year rate
+                    if order_number == "52":
+                        if is_first_year == "Yes":
+                            applicable_two_year_rate = two_year_first_year_rate
+                            explanation_steps.append(f"--> Using first year rate ({two_year_first_year_rate*100:.2f}%) for Order #52")
+                        else:  # is_first_year == "No"
+                            applicable_two_year_rate = two_year_second_year_rate
+                            explanation_steps.append(f"--> Using second year rate ({two_year_second_year_rate*100:.2f}%) for Order #52")
+                    
                     # Check Lease Start Date (Term 2+)
                     if DATE_RANGES["range_83_97"][0] <= lsd <= DATE_RANGES["range_83_97"][1]:
                         log.info("Path: Lease Date 83-97")
                         explanation_steps.append(f"--> Date falls within {DATE_RANGES['range_83_97'][0]} to {DATE_RANGES['range_83_97'][1]}.")
-                        result = 0.20 - two_yr_rate + vac_lease_rate
-                        explanation_steps.append(f"--> Calculation: 20.00% - 2-Year Rate ({two_yr_rate*100:.2f}%) + Vacancy Lease Rate ({vac_lease_rate*100:.2f}%) = {result*100:.2f}%")
+                        result = 0.20 - applicable_two_year_rate + vac_lease_rate
+                        explanation_steps.append(f"--> Calculation: 20.00% - 2-Year Rate ({applicable_two_year_rate*100:.2f}%) + Vacancy Lease Rate ({vac_lease_rate*100:.2f}%) = {result*100:.2f}%")
                     elif DATE_RANGES["range_97_11"][0] <= lsd <= DATE_RANGES["range_97_11"][1]:
                         log.info("Path: Lease Date 97-11")
                         explanation_steps.append(f"--> Date falls within {DATE_RANGES['range_97_11'][0]} to {DATE_RANGES['range_97_11'][1]}.")
@@ -401,8 +478,8 @@ def calculate_vacancy_allowance_interactive(
                             explanation_steps.append("--> Result: 0.00%")
                         else: # Had Vacancy Allowance No
                             log.info("Path: Had Vacancy Allowance Prev 12 Mo == No")
-                            result = one_yr_rate
-                            explanation_steps.append(f"--> Result: 1-Year Rate ({result*100:.2f}%)")
+                            result = applicable_two_year_rate
+                            explanation_steps.append(f"--> Result: Applicable 2-Year Rate ({result*100:.2f}%)")
                     else:
                         result = "Indeterminable: Lease Start Date out of defined ranges (Term 2+)"
                         explanation_steps.append(f"--> Lease Start Date {lsd} does not fall into any defined range for Term 2+.")
@@ -469,6 +546,22 @@ def create_calculator_tab():
                     info="The start date of the lease in question.",
                     include_time=False # Set to False to only show the date picker
                 )
+                # Input for RGBO Order #52 handling (2-year), hidden by default
+                is_first_year_input = gr.Radio(
+                    label="Is this the first year of the 2-year lease?",
+                    choices=["Yes", "No"],
+                    value="Yes",
+                    visible=False,  # Hidden by default
+                    info="Visible only for 2-year leases during RGBO Order #52 period (10/1/2020-9/30/2021)."
+                )
+                # New input for RGBO Order #53 handling (1-year), hidden by default
+                is_first_half_input = gr.Radio(
+                    label="Is this the first or second 6 months of the 1-year lease?",
+                    choices=["First 6 Months", "Second 6 Months"],
+                    value="First 6 Months",
+                    visible=False,  # Hidden by default
+                    info="Visible only for 1-year leases during RGBO Order #53 period (10/1/2021-9/30/2022)."
+                )
 
             with gr.Column(scale=1):
                 prev_vac_allow_input = gr.Radio(
@@ -496,9 +589,64 @@ def create_calculator_tab():
         logic_output = gr.Textbox(label="Calculation Logic", interactive=False, lines=10)
         # Add a new Markdown component for notes/footnotes
         notes_output = gr.Markdown(label="Relevant Guideline Notes & Footnotes", value="Notes will appear here after calculation.")
+        
+        # Function to determine visibility of conditional inputs based on term length and date
+        def update_conditional_visibility(term, start_date):
+            show_order_52_q = False
+            show_order_53_q = False
+            try:
+                # Process the date (convert from various types)
+                if start_date is None:
+                    return gr.update(visible=False), gr.update(visible=False)
+                
+                processed_date = None
+                if isinstance(start_date, str):
+                    try: processed_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+                    except ValueError: log.error(f"Invalid date string format: {start_date}")
+                elif isinstance(start_date, datetime): processed_date = start_date.date()
+                elif isinstance(start_date, (float, int)):
+                    try: processed_date = datetime.fromtimestamp(start_date).date()
+                    except (ValueError, OSError, OverflowError) as e: log.error(f"Cannot convert timestamp {start_date} to date: {e}")
+                elif isinstance(start_date, date): processed_date = start_date
+                else: log.error(f"Could not convert {start_date} (type: {type(start_date)}) to date")
 
+                if processed_date:
+                    # Check Order #52 (2-year term, 10/1/2020 - 9/30/2021)
+                    if term == "2+":
+                        order_52_start = date(2020, 10, 1)
+                        order_52_end = date(2021, 9, 30)
+                        if order_52_start <= processed_date <= order_52_end:
+                            log.info(f"Showing Order #52 question: Lease date {processed_date} is within period")
+                            show_order_52_q = True
+                    
+                    # Check Order #53 (1-year term, 10/1/2021 - 9/30/2022)
+                    elif term == "1":
+                        order_53_start = date(2021, 10, 1)
+                        order_53_end = date(2022, 9, 30)
+                        if order_53_start <= processed_date <= order_53_end:
+                            log.info(f"Showing Order #53 question: Lease date {processed_date} is within period")
+                            show_order_53_q = True
+                            
+            except Exception as e:
+                log.error(f"Error in update_conditional_visibility: {e}", exc_info=True)
+            
+            # Return updates for both conditional inputs
+            return gr.update(visible=show_order_52_q), gr.update(visible=show_order_53_q)
+        
+        # Event handlers for conditionally showing the relevant questions
+        term_length_input.change(
+            fn=update_conditional_visibility,
+            inputs=[term_length_input, lease_start_input],
+            outputs=[is_first_year_input, is_first_half_input] # Update both
+        )
+        
+        lease_start_input.change(
+            fn=update_conditional_visibility,
+            inputs=[term_length_input, lease_start_input],
+            outputs=[is_first_year_input, is_first_half_input] # Update both
+        )
 
-        # Event Handler
+        # Event Handler for calculation
         calculate_button.click(
             fn=calculate_vacancy_allowance_interactive,
             inputs=[
@@ -508,9 +656,11 @@ def create_calculator_tab():
                 lease_start_input,
                 prev_vac_allow_input,
                 prev_pref_rent_input,
-                tenant_tenure_input
+                tenant_tenure_input,
+                is_first_year_input,
+                is_first_half_input  # Add the new input here
             ],
-            outputs=[result_output, logic_output, notes_output] # Update outputs to include the new textbox and notes
+            outputs=[result_output, logic_output, notes_output]
         )
 
     # Return the Blocks object so it can be rendered in the main app
