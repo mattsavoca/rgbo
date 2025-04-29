@@ -11,6 +11,22 @@ import polars as pl # Use polars for reading CSVs
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s [GRADIO_APP] - %(message)s')
 
+# Import the calculator tab creator FIRST (after logging config)
+try:
+    from vacancy_calculator_tab import create_calculator_tab
+    # Use logging directly here as it's configured just above
+    logging.info("Successfully imported UI builder from vacancy_calculator_tab.")
+    calculator_tab_available = True
+except ImportError as e:
+    logging.error(f"Failed to import vacancy_calculator_tab: {e}. Calculator tab will be disabled.", exc_info=True)
+    calculator_tab_available = False
+    # Define a dummy function if import fails
+    def create_calculator_tab():
+        with gr.Blocks() as calculator_tab_error:
+            gr.Markdown("## Vacancy Allowance Calculator")
+            gr.Markdown("**Error:** Failed to load the calculator tab module. Please check the application logs.")
+        return calculator_tab_error
+
 # --- Import Core Logic ---
 # Assuming pdf_handler.py is in the same directory
 try:
@@ -325,68 +341,82 @@ def reset_state(current_zip_path: Optional[str], preview_cache_dir: Optional[str
 
 # --- Gradio Interface Definition ---
 
-with gr.Blocks(title="DHCR PDF Parser") as demo:
-    gr.Markdown("# DHCR Rent History PDF Parser")
-    gr.Markdown(
-        "Upload a DHCR Rent History PDF file. The script will attempt to extract unit data using AI, "
-        "optionally calculate vacancy allowances, generate images, and provide a downloadable zip file with the results."
-        "\\n**Note:** Processing can take several minutes depending on the PDF size and API response times."
-        "\\n**Requires a `GEMINI_API_KEY` environment variable or a `.env` file.**")
+with gr.Blocks(title="DHCR PDF Parser & Tools") as demo:
+    gr.Markdown("# DHCR Tools")
 
+    with gr.Tabs():
+        with gr.TabItem("PDF Parser"): # --- TAB 1: PDF Parser ---
+            gr.Markdown("## PDF Parser")
+            gr.Markdown(
+                "Upload a DHCR Rent History PDF file. The script will attempt to extract unit data using AI, "
+                "optionally calculate vacancy allowances, generate images, and provide a downloadable zip file with the results."
+                "\n**Note:** Processing can take several minutes depending on the PDF size and API response times."
+                "\n**Requires a `GEMINI_API_KEY` environment variable or a `.env` file.**")
 
-    with gr.Row():
-        with gr.Column(scale=1):
-            pdf_input = gr.File(label="Upload PDF", file_types=[".pdf"], type="filepath")
+            # --- Original PDF Parser Layout START ---
             with gr.Row():
-                 images_checkbox = gr.Checkbox(label="Generate Page Images", value=True)
-                 vacancy_checkbox = gr.Checkbox(label="Calculate Vacancy Allowance (Alpha)", value=False)
-            submit_button = gr.Button("Process PDF", variant="primary")
-            reset_button = gr.Button("Reset")
-        with gr.Column(scale=2):
-            status_output = gr.Textbox(label="Status / Logs", lines=8, interactive=False)
-            # Group for results area (Dropdown + DataFrame)
-            with gr.Group(visible=False) as df_results_group:
-                unit_selector_dd = gr.Dropdown(label="Select Unit to Preview", interactive=True, visible=False)
-                df_preview = gr.DataFrame(label="DataFrame Preview", wrap=True)
+                with gr.Column(scale=1):
+                    pdf_input = gr.File(label="Upload PDF", file_types=[".pdf"], type="filepath")
+                    with gr.Row():
+                        images_checkbox = gr.Checkbox(label="Generate Page Images", value=True)
+                        vacancy_checkbox = gr.Checkbox(label="Calculate Vacancy Allowance (Alpha)", value=False)
+                    submit_button = gr.Button("Process PDF", variant="primary")
+                    reset_button = gr.Button("Reset")
+                with gr.Column(scale=2):
+                    status_output = gr.Textbox(label="Status / Logs", lines=8, interactive=False)
+                    # Group for results area (Dropdown + DataFrame)
+                    with gr.Group(visible=False) as df_results_group:
+                        unit_selector_dd = gr.Dropdown(label="Select Unit to Preview", interactive=True, visible=False)
+                        df_preview = gr.DataFrame(label="DataFrame Preview", wrap=True)
 
-            zip_output = gr.File(label="Download Results (.zip)")
-            # State components
-            zip_path_state = gr.State(value=None)
-            unit_data_map_state = gr.State(value={}) # Holds map {unit_name: full_copied_csv_path}
-            preview_cache_dir_state = gr.State(value=None) # Holds path to persistent cache dir
+                    zip_output = gr.File(label="Download Results (.zip)")
+                    # State components need to be accessible by handlers, define them outside the tab if needed, but usually fine here
+                    zip_path_state = gr.State(value=None)
+                    unit_data_map_state = gr.State(value={}) # Holds map {unit_name: full_copied_csv_path}
+                    preview_cache_dir_state = gr.State(value=None) # Holds path to persistent cache dir
+            # --- Original PDF Parser Layout END ---
 
+            # --- PDF Parser Event Handling (Remains associated with components above) ---
+            submit_button.click(
+                fn=process_dhcr_pdf,
+                inputs=[pdf_input, images_checkbox, vacancy_checkbox],
+                outputs=[
+                    zip_output, status_output, zip_path_state,
+                    df_preview, df_results_group, unit_selector_dd, unit_data_map_state,
+                    preview_cache_dir_state
+                ]
+            )
 
-    # --- Event Handling ---
-    submit_button.click(
-        fn=process_dhcr_pdf,
-        inputs=[pdf_input, images_checkbox, vacancy_checkbox],
-        # Outputs: Add preview_cache_dir_state (now 8 outputs)
-        outputs=[
-            zip_output, status_output, zip_path_state,
-            df_preview, df_results_group, unit_selector_dd, unit_data_map_state,
-            preview_cache_dir_state
-        ]
-    )
+            unit_selector_dd.change(
+                fn=update_df_preview,
+                inputs=[unit_selector_dd, unit_data_map_state],
+                outputs=[df_preview]
+            )
 
-    # Handler for dropdown change - uses cached paths from unit_data_map_state
-    unit_selector_dd.change(
-        fn=update_df_preview,
-        inputs=[unit_selector_dd, unit_data_map_state],
-        outputs=[df_preview]
-    )
+            reset_button.click(
+                fn=reset_state,
+                inputs=[zip_path_state, preview_cache_dir_state],
+                outputs=[
+                    pdf_input, status_output, zip_output, zip_path_state,
+                    df_preview, df_results_group, unit_selector_dd, unit_data_map_state,
+                    preview_cache_dir_state
+                ]
+            )
+        # --- END TAB 1 ---
 
-
-    reset_button.click(
-        fn=reset_state,
-        # Inputs: Add preview_cache_dir_state
-        inputs=[zip_path_state, preview_cache_dir_state],
-        # Outputs: Add preview_cache_dir_state (now 9 outputs)
-        outputs=[
-            pdf_input, status_output, zip_output, zip_path_state,
-            df_preview, df_results_group, unit_selector_dd, unit_data_map_state,
-            preview_cache_dir_state
-        ]
-    )
+        with gr.TabItem("Vacancy Allowance Calculator"): # --- TAB 2: Vacancy Allowance Calculator ---
+             # Render the calculator tab UI built in the other file
+             # The create_calculator_tab() function returns a gr.Blocks instance
+             # which needs to be rendered within this TabItem context.
+             # We need to call the function *inside* the TabItem context.
+             if calculator_tab_available:
+                  calculator_ui = create_calculator_tab()
+                  # If create_calculator_tab returns a Blocks object, render it implicitly
+                  # No explicit render() call needed if Blocks is created within context
+             else:
+                  gr.Markdown("## Vacancy AllowanceCalculator")
+                  gr.Markdown("**Error:** Failed to load the calculator tab module. Please check the application logs.")
+        # --- END TAB 2 ---
 
 # --- Launch the App ---
 if __name__ == "__main__":
