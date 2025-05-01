@@ -2,7 +2,7 @@ import gradio as gr
 from datetime import datetime, date
 import logging
 import polars as pl # Use polars for consistency if needed by imported functions
-from typing import Tuple, Dict, Optional # Import Tuple for type hinting, Dict/Optional for footnote lookup
+from typing import Tuple, Dict, Optional, List # Import Tuple for type hinting, Dict/Optional for footnote lookup, List for dropdown choices
 
 # Configure logging for this module
 log = logging.getLogger(__name__)
@@ -512,14 +512,33 @@ def calculate_vacancy_allowance_interactive(
 
 
 # --- Gradio UI Definition ---
-def create_calculator_tab():
-    """Creates the Gradio Blocks UI for the Vacancy Allowance Calculator tab."""
+def create_calculator_tab(processed_data_state: gr.State): # <<< Accept shared state
+    """Creates the Gradio Blocks UI for the Vacancy Allowance Calculator tab.
+
+    Args:
+        processed_data_state: A Gradio State object holding the dictionary
+                              of {unit_name: polars_dataframe} from the first tab.
+    """
     with gr.Blocks() as calculator_tab:
         gr.Markdown("## Vacancy Allowance Calculator")
         gr.Markdown("Enter the details below as per the flowchart to calculate the allowance.")
 
         if rgb_data is None or rgb_data.is_empty():
              gr.Markdown("**Error: RGBO data failed to load. Calculator is non-functional.** Check application logs.", elem_id="error-message")
+
+        # --- ADDED: Preview Section ---
+        with gr.Accordion("Preview Extracted Unit Data", open=False):
+            calculator_unit_selector_dd = gr.Dropdown(
+                label="Select Unit Data to Preview",
+                choices=[],
+                interactive=True,
+                info="Select a unit processed in the PDF Parser tab to view its data."
+            )
+            calculator_df_preview = gr.DataFrame(
+                label="Selected Unit Data Preview",
+                interactive=False
+            )
+        # --- END Preview Section ---
 
         with gr.Row():
             with gr.Column(scale=1):
@@ -676,6 +695,54 @@ def create_calculator_tab():
             ],
             outputs=[result_output, logic_output, notes_output]
         )
+
+        # --- ADDED: Event Handlers for Preview Section ---
+
+        # Function to update the dropdown choices when the shared state changes
+        def update_calculator_unit_dropdown(processed_data: Dict[str, pl.DataFrame]) -> gr.Dropdown:
+            """Updates the choices in the unit selection dropdown based on the processed data.
+            Args:
+                processed_data: The dictionary {unit_name: dataframe} from the shared state.
+            Returns:
+                An updated Gradio Dropdown component.
+            """
+            unit_names = list(processed_data.keys()) if processed_data else []
+            log.info(f"Updating calculator tab dropdown with units: {unit_names}")
+            # Keep existing value if it's still valid, otherwise reset
+            # current_value = calculator_unit_selector_dd.value # Can't access component value directly here
+            # new_value = current_value if current_value in unit_names else None
+            return gr.update(choices=sorted(unit_names), value=None, interactive=bool(unit_names))
+
+        # Function to update the DataFrame preview when a unit is selected
+        def update_calculator_df_preview(selected_unit: str, processed_data: Dict[str, pl.DataFrame]) -> gr.DataFrame:
+            """Updates the DataFrame component to show the data for the selected unit.
+            Args:
+                selected_unit: The unit name selected in the dropdown.
+                processed_data: The dictionary {unit_name: dataframe} from the shared state.
+            Returns:
+                An updated Gradio DataFrame component.
+            """
+            if selected_unit and processed_data and selected_unit in processed_data:
+                log.info(f"Displaying DataFrame for selected unit in calculator tab: {selected_unit}")
+                return gr.update(value=processed_data[selected_unit])
+            else:
+                log.info(f"Clearing calculator DataFrame preview (selected: {selected_unit}, data present: {bool(processed_data)})")
+                return gr.update(value=None)
+
+        # Trigger dropdown update when the shared state changes
+        processed_data_state.change(
+            fn=update_calculator_unit_dropdown,
+            inputs=[processed_data_state],
+            outputs=[calculator_unit_selector_dd]
+        )
+
+        # Trigger DataFrame update when the dropdown selection changes
+        calculator_unit_selector_dd.change(
+            fn=update_calculator_df_preview,
+            inputs=[calculator_unit_selector_dd, processed_data_state],
+            outputs=[calculator_df_preview]
+        )
+        # --- END Event Handlers for Preview Section ---
 
     # Return the Blocks object so it can be rendered in the main app
     return calculator_tab

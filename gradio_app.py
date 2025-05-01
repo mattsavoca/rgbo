@@ -48,26 +48,28 @@ except Exception as e:
 
 # --- Gradio Processing Function ---
 
-# Update return signature: Add preview_cache_dir_state output
+# Update return signature: Add preview_cache_dir_state output AND processed_data_state output
 def process_dhcr_pdf(pdf_file_obj, generate_images: bool, calculate_vacancy: bool) -> Tuple[
     Optional[str], str, Optional[str], # zip_output, status_output, zip_path_state
     Dict, Dict, Dict, Dict, # df_preview update, df_group update, unit_selector update, unit_data_map_state update
-    Optional[str] # preview_cache_dir_state update
-]: # Now returns 8 items
+    Optional[str], # preview_cache_dir_state update
+    Dict[str, pl.DataFrame] # processed_data_state update
+]: # Now returns 9 items
     """
     Main function called by Gradio interface. Processes PDF, copies preview CSVs to a
     persistent cache, zips results, prepares data for the first unit's DataFrame,
-    populates unit selector dropdown, and stores a map of unit names to FULL CSV paths
-    in the persistent cache.
+    populates unit selector dropdown, stores a map of unit names to FULL CSV paths
+    in the persistent cache, and loads all unit dataframes into a dictionary.
 
     Returns:
-        A tuple containing updates for various UI components.
+        A tuple containing updates for various UI components including the processed data dictionary.
     """
     # Initialize return values
     first_unit_df_data = gr.update(value=None)
     df_group_update = gr.update(visible=False)
     unit_selector_update = gr.update(choices=[], value=None, visible=False)
     unit_data_map: Dict[str, Path] = {} # Map unit name to its FULL CSV path IN CACHE
+    processed_data_dict: Dict[str, pl.DataFrame] = {} # Map unit name to its DataFrame
     final_zip_path: Optional[str] = None
     persistent_zip_path_state: Optional[str] = None
     preview_cache_dir: Optional[Path] = None # Path to the persistent preview dir
@@ -76,7 +78,7 @@ def process_dhcr_pdf(pdf_file_obj, generate_images: bool, calculate_vacancy: boo
     if pdf_file_obj is None:
         return (None, "Error: No PDF file provided.", None,
                 first_unit_df_data, df_group_update, unit_selector_update, unit_data_map,
-                preview_cache_dir_state_update)
+                preview_cache_dir_state_update, processed_data_dict)
 
     uploaded_pdf_path = Path(pdf_file_obj.name)
     logging.info(f"Received file: {uploaded_pdf_path.name}, Generate Images: {generate_images}, Calculate Vacancy: {calculate_vacancy}")
@@ -89,11 +91,11 @@ def process_dhcr_pdf(pdf_file_obj, generate_images: bool, calculate_vacancy: boo
     except Exception as e:
         logging.error(f"Failed to create persistent preview cache directory: {e}", exc_info=True)
         status_message = f"Fatal Error: Could not create preview cache directory: {e}"
-        # Return error state (8 items)
+        # Return error state (9 items)
         return (None, status_message, None,
                 gr.update(value=None), gr.update(visible=False),
                 gr.update(choices=[], value=None, visible=False), {},
-                None)
+                None, {})
 
     try:
         # --- Process PDF in its own temporary directory ---
@@ -185,6 +187,24 @@ def process_dhcr_pdf(pdf_file_obj, generate_images: bool, calculate_vacancy: boo
                     else: # No units with CSVs found or copied
                         status_message += "- No units with CSV data found or cached to display.\n"
 
+                    # --- Load ALL Unit DataFrames into processed_data_dict (for Tab 2) ---
+                    status_message += "\nLoading all unit data for calculator tab preview...\n"
+                    for unit_name_load, cached_csv_path_load in unit_data_map.items():
+                        try:
+                            if cached_csv_path_load.exists() and cached_csv_path_load.stat().st_size > 0:
+                                df = pl.read_csv(cached_csv_path_load, try_parse_dates=True)
+                                processed_data_dict[unit_name_load] = df
+                                logging.info(f"Loaded DataFrame for '{unit_name_load}' into shared state.")
+                                status_message += f"- Loaded data for {unit_name_load}.\n"
+                            else:
+                                 logging.warning(f"Skipping DataFrame load for calculator tab preview for unit '{unit_name_load}': CSV not found or empty at {cached_csv_path_load}")
+                                 status_message += f"- Warning: Could not load data for {unit_name_load} (file missing or empty).\n"
+                        except Exception as load_err:
+                            logging.error(f"Failed to load DataFrame for calculator tab preview for unit '{unit_name_load}' from {cached_csv_path_load}: {load_err}")
+                            status_message += f"- Error: Failed to load data for {unit_name_load}.\n"
+                    status_message += "Finished loading data for calculator tab.\n"
+                    # --- End Load ALL ---
+
             except Exception as e:
                 logging.error(f"Error during PDF processing logic: {e}", exc_info=True)
                 processing_error = f"An unexpected error occurred during processing: {e}"
@@ -193,11 +213,11 @@ def process_dhcr_pdf(pdf_file_obj, generate_images: bool, calculate_vacancy: boo
             if processing_error:
                 status_message += f"Error: {processing_error}\n"
                 logging.error(status_message)
-                # Return error state (8 items)
+                # Return error state (9 items)
                 return (None, status_message, None,
                         gr.update(value=None), gr.update(visible=False),
                         gr.update(choices=[], value=None, visible=False), {},
-                        preview_cache_dir_state_update) # Keep cache dir path for potential cleanup later if needed
+                        preview_cache_dir_state_update, {})
 
             # --- Zip the results (from original temp location) ---
             if run_output_dir_relative_path:
@@ -245,10 +265,10 @@ def process_dhcr_pdf(pdf_file_obj, generate_images: bool, calculate_vacancy: boo
 
         # --- Inner temp directory is now cleaned up by the 'with' block ---
 
-        # --- Prepare final return tuple (8 items) ---
+        # --- Prepare final return tuple (9 items) ---
         return (final_zip_path, status_message, persistent_zip_path_state,
                 first_unit_df_data, df_group_update, unit_selector_update, unit_data_map,
-                preview_cache_dir_state_update)
+                preview_cache_dir_state_update, processed_data_dict)
 
     except Exception as e:
         # This catches errors outside the inner 'with' block, like the mkdtemp failure
@@ -262,11 +282,11 @@ def process_dhcr_pdf(pdf_file_obj, generate_images: bool, calculate_vacancy: boo
                  logging.info(f"Cleaned up preview cache directory {preview_cache_dir} due to outer error.")
              except Exception as cleanup_err:
                  logging.error(f"Failed to cleanup preview cache directory {preview_cache_dir} after error: {cleanup_err}")
-        # Return error state (8 items)
+        # Return error state (9 items)
         return (None, status_message, None,
                 gr.update(value=None), gr.update(visible=False),
                 gr.update(choices=[], value=None, visible=False), {},
-                None)
+                None, {})
 
 # --- Dropdown Change Handler ---
 def update_df_preview(selected_unit: str, unit_data_map: Dict[str, Path]) -> Dict:
@@ -304,15 +324,20 @@ def update_df_preview(selected_unit: str, unit_data_map: Dict[str, Path]) -> Dic
 
 
 # --- Reset Function ---
-# Update signature: Add preview_cache_dir_state input
-def reset_state(current_zip_path: Optional[str], preview_cache_dir: Optional[str]) -> Tuple[
+# Update signature: Add preview_cache_dir_state input AND processed_units_data_state input
+def reset_state(
+    current_zip_path: Optional[str],
+    preview_cache_dir: Optional[str],
+    # processed_data: Dict # We don't actually need the data itself, just need to clear the state component
+) -> Tuple[
     None, str, None, None, # pdf_input, status_output, zip_output, zip_path_state
     Dict, Dict, Dict, None, # df_preview update, df_group update, unit_selector update, unit_data_map_state clear
-    None # preview_cache_dir_state clear
-]: # Now returns 9 items total
+    None, # preview_cache_dir_state clear
+    None # processed_units_data_state clear
+]: # Now returns 10 items total
     """
     Clears the UI elements, state, the persistent preview cache directory,
-    and the named temporary zip file.
+    and the named temporary zip file. Also clears the processed data state.
     """
     status = "State reset."
     zip_removed_status = ""
@@ -364,15 +389,18 @@ def reset_state(current_zip_path: Optional[str], preview_cache_dir: Optional[str
     dropdown_update = gr.update(choices=[], value=None, visible=False)
     map_clear = None # Returning None clears State
     cache_dir_clear = None # Returning None clears State
+    processed_data_clear = None # Returning None clears State
 
-    # 9 items: pdf_input, status_output, zip_output, zip_path_state, df_preview, df_results_group, unit_selector_dd, unit_data_map_state, preview_cache_dir_state
-    return None, final_status, None, None, df_update, group_update, dropdown_update, map_clear, cache_dir_clear
+    # 10 items: pdf_input, status_output, zip_output, zip_path_state, df_preview, df_results_group, unit_selector_dd, unit_data_map_state, preview_cache_dir_state, processed_units_data_state
+    return None, final_status, None, None, df_update, group_update, dropdown_update, map_clear, cache_dir_clear, processed_data_clear
 
 
 # --- Gradio Interface Definition ---
 
 with gr.Blocks(title="DHCR PDF Parser & Tools") as demo:
     gr.Markdown("# DHCR Tools")
+    # --- ADDED: Shared state for processed unit dataframes ---
+    processed_units_data_state = gr.State(value={}) # Holds {unit_name: polars_df}
 
     with gr.Tabs():
         with gr.TabItem("PDF Parser"): # --- TAB 1: PDF Parser ---
@@ -413,7 +441,7 @@ with gr.Blocks(title="DHCR PDF Parser & Tools") as demo:
                 outputs=[
                     zip_output, status_output, zip_path_state,
                     df_preview, df_results_group, unit_selector_dd, unit_data_map_state,
-                    preview_cache_dir_state
+                    preview_cache_dir_state, processed_units_data_state
                 ]
             )
 
@@ -429,7 +457,7 @@ with gr.Blocks(title="DHCR PDF Parser & Tools") as demo:
                 outputs=[
                     pdf_input, status_output, zip_output, zip_path_state,
                     df_preview, df_results_group, unit_selector_dd, unit_data_map_state,
-                    preview_cache_dir_state
+                    preview_cache_dir_state, processed_units_data_state
                 ]
             )
         # --- END TAB 1 ---
@@ -440,7 +468,8 @@ with gr.Blocks(title="DHCR PDF Parser & Tools") as demo:
              # which needs to be rendered within this TabItem context.
              # We need to call the function *inside* the TabItem context.
              if calculator_tab_available:
-                  calculator_ui = create_calculator_tab()
+                  # <<< Pass the shared state to the tab creation function >>>
+                  calculator_ui = create_calculator_tab(processed_units_data_state)
                   # If create_calculator_tab returns a Blocks object, render it implicitly
                   # No explicit render() call needed if Blocks is created within context
              else:
