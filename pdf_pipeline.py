@@ -34,9 +34,9 @@ else:
     # exit() or raise Exception("API Key not configured")
 
 # Specify the Gemini model to use
-# Use a model that supports PDF processing, like gemini-1.5-pro-latest or gemini-1.5-flash-latest
+# Use a model that supports PDF processing, like gemini-2.0-flash-exp
 # Check the Gemini documentation for the latest recommended models supporting PDF input.
-MODEL_NAME = "gemini-2.0-flash-exp" 
+MODEL_NAME = "gemini-2.0-flash-lite" 
 LEN_TIMEOUT = 1000 * 60 # (in miliseconds) 
 # Directory for output CSV files when run as script
 DEFAULT_OUTPUT_DIR = Path("./dhcr_output_csvs")
@@ -202,11 +202,15 @@ def identify_dhcr_pages(client: Client, pdf_data: bytes) -> List[int]:
     for attempt in range(max_retries):
         try:
             logging.info(f"Attempt {attempt + 1}/{max_retries}: Identifying DHCR pages...")
+            logging.info(f"Preparing PDF data part for page identification...")
+            pdf_part = types.Part.from_bytes(data=pdf_data, mime_type="application/pdf")
+            logging.info(f"PDF data part prepared. Making generate_content call for page ID...")
             # Call generate_content on the client.models instance
             response = client.models.generate_content( # Use client.models
                 model=MODEL_NAME, # Specify model here
                 contents=[
-                    types.Part.from_bytes(data=pdf_data, mime_type="application/pdf"),
+                    #types.Part.from_bytes(data=pdf_data, mime_type="application/pdf"),
+                    pdf_part,
                     prompt,
                 ],
                 config=types.GenerateContentConfig( # Use GenerateContentConfig
@@ -387,22 +391,27 @@ def process_pdf(pdf_filepath: Union[str, Path], output_dir: Path, generate_image
 
     # 1. Load PDF data
     try:
+        logging.info("Reading PDF file into memory...")
         with open(pdf_path, "rb") as f:
             pdf_data = f.read()
-        logging.info(f"Loaded PDF data ({len(pdf_data)} bytes).")
+        logging.info(f"Loaded PDF data ({len(pdf_data)} bytes). Read complete.")
     except IOError as e:
         logging.error(f"Failed to read PDF file {pdf_path}: {e}")
         return
 
     # 2. Initialize Gemini Client
     try:
+        logging.info("Initializing Gemini client...")
         client = get_gemini_client()
+        logging.info("Gemini client initialized.")
     except Exception:
         # Error already logged in get_gemini_client
         return
 
     # 3. Identify relevant pages
+    logging.info("Calling identify_dhcr_pages...")
     valid_pages = identify_dhcr_pages(client, pdf_data)
+    logging.info(f"identify_dhcr_pages returned: {valid_pages}")
     if not valid_pages:
         logging.warning(f"No pages with valid DHCR data found in {pdf_path}. Exiting.")
         return

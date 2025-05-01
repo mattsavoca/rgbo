@@ -106,8 +106,8 @@ def process_dhcr_pdf(pdf_file_obj, generate_images: bool, calculate_vacancy: boo
             shutil.copy(uploaded_pdf_path, temp_input_pdf)
             logging.info(f"Copied uploaded PDF to temporary input: {temp_input_pdf}")
 
-            status_message = f"Processing {temp_input_pdf.name}...\\n"
-            status_message += f"Generate Images: {generate_images}, Calculate Vacancy: {calculate_vacancy}\\n"
+            status_message = f"Processing {temp_input_pdf.name}...\n"
+            status_message += f"Generate Images: {generate_images}, Calculate Vacancy: {calculate_vacancy}\n"
 
             pipeline_results: List[Dict[str, Any]] = []
             run_output_dir_relative_path: Optional[Path] = None # Relative to temp_output_base
@@ -126,10 +126,10 @@ def process_dhcr_pdf(pdf_file_obj, generate_images: bool, calculate_vacancy: boo
                 elif not pipeline_results and not list((temp_output_base / run_output_dir_relative_path).glob('*')):
                      processing_error = f"Processing finished, but no units were extracted and no output files were found in '{run_output_dir_relative_path}'. Check PDF content and API key/quota."
                 elif not pipeline_results:
-                     status_message += f"Processing finished for {temp_input_pdf.name}, but no specific unit data was extracted. Output files might still be generated.\\n"
+                     status_message += f"Processing finished for {temp_input_pdf.name}, but no specific unit data was extracted. Output files might still be generated.\n"
                 else:
                     # --- Copy CSVs to Persistent Cache, Populate Map, Load First DF ---
-                    status_message += "\\nCopying results to preview cache...\\n"
+                    status_message += "\nCopying results to preview cache...\n"
                     unit_names = []
                     first_unit_name = None
                     run_output_dir_full_path_source = temp_output_base # Base for resolving source paths
@@ -154,16 +154,16 @@ def process_dhcr_pdf(pdf_file_obj, generate_images: bool, calculate_vacancy: boo
                                         first_unit_name = unit_name
                                 except Exception as copy_err:
                                     logging.error(f"Failed to copy preview CSV for '{unit_name}' from {original_full_csv_path} to {copied_csv_path}: {copy_err}", exc_info=True)
-                                    status_message += f"- Warning: Failed to copy preview for {unit_name}.\\n"
+                                    status_message += f"- Warning: Failed to copy preview for {unit_name}.\n"
                             else:
                                  logging.warning(f"Source CSV not found for unit '{unit_name}' at {original_full_csv_path}, cannot copy to cache.")
-                                 status_message += f"- Warning: Source CSV not found for {unit_name}, cannot cache preview.\\n"
+                                 status_message += f"- Warning: Source CSV not found for {unit_name}, cannot cache preview.\n"
                         else:
-                            status_message += f"- Warning: No CSV path found for unit result {i}. Cannot add to dropdown or cache.\\n"
+                            status_message += f"- Warning: No CSV path found for unit result {i}. Cannot add to dropdown or cache.\n"
 
                     # --- Load Initial Preview (from cache) ---
                     if first_unit_name and first_unit_name in unit_data_map:
-                         status_message += f"Attempting to load initial preview for: {first_unit_name} (from cache)\\n"
+                         status_message += f"Attempting to load initial preview for: {first_unit_name} (from cache)\n"
                          # Get the path to the copied file directly from the map
                          first_copied_csv_path = unit_data_map[first_unit_name]
                          logging.info(f"Reading initial cached CSV from: {first_copied_csv_path}")
@@ -174,16 +174,16 @@ def process_dhcr_pdf(pdf_file_obj, generate_images: bool, calculate_vacancy: boo
                                 first_unit_df_data = gr.update(value=df_preview_data, label=preview_label)
                                 df_group_update = gr.update(visible=True) # Show group
                                 unit_selector_update = gr.update(choices=unit_names, value=first_unit_name, visible=True) # Show dropdown
-                                status_message += f"- Successfully loaded initial preview for {first_unit_name}.\\n"
+                                status_message += f"- Successfully loaded initial preview for {first_unit_name}.\n"
                             else:
-                                status_message += f"- Initial preview failed: Cached CSV for {first_unit_name} not found or empty at {first_copied_csv_path}.\\n"
+                                status_message += f"- Initial preview failed: Cached CSV for {first_unit_name} not found or empty at {first_copied_csv_path}.\n"
                          except Exception as preview_err:
                              logging.error(f"Error generating initial DataFrame preview from {first_copied_csv_path}: {preview_err}", exc_info=True)
-                             status_message += f"- Error reading initial cached CSV for {first_unit_name}: {preview_err}\\n"
+                             status_message += f"- Error reading initial cached CSV for {first_unit_name}: {preview_err}\n"
                     elif unit_names: # Units exist but couldn't cache/load first one?
-                         status_message += "- Units found, but couldn't load initial preview (copy or read error?). Check logs.\\n"
+                         status_message += "- Units found, but couldn't load initial preview (copy or read error?). Check logs.\n"
                     else: # No units with CSVs found or copied
-                        status_message += "- No units with CSV data found or cached to display.\\n"
+                        status_message += "- No units with CSV data found or cached to display.\n"
 
             except Exception as e:
                 logging.error(f"Error during PDF processing logic: {e}", exc_info=True)
@@ -191,7 +191,7 @@ def process_dhcr_pdf(pdf_file_obj, generate_images: bool, calculate_vacancy: boo
 
             # --- Handle processing outcome ---
             if processing_error:
-                status_message += f"Error: {processing_error}\\n"
+                status_message += f"Error: {processing_error}\n"
                 logging.error(status_message)
                 # Return error state (8 items)
                 return (None, status_message, None,
@@ -203,7 +203,7 @@ def process_dhcr_pdf(pdf_file_obj, generate_images: bool, calculate_vacancy: boo
             if run_output_dir_relative_path:
                 run_output_dir_full_path_source = temp_output_base / run_output_dir_relative_path
                 if not run_output_dir_full_path_source.is_dir() or not any(run_output_dir_full_path_source.iterdir()):
-                    status_message += f"Warning: Original output directory '{run_output_dir_full_path_source}' not found or empty. Cannot create zip.\\n"
+                    status_message += f"Warning: Original output directory '{run_output_dir_full_path_source}' not found or empty. Cannot create zip.\n"
                     final_zip_path = None
                     persistent_zip_path_state = None
                 else:
@@ -217,21 +217,29 @@ def process_dhcr_pdf(pdf_file_obj, generate_images: bool, calculate_vacancy: boo
                                     arcname = item.relative_to(run_output_dir_full_path_source)
                                     zipf.write(item, arcname=arcname)
 
-                        status_message += f"Successfully created zip file: {zip_filename}\\n"
+                        status_message += f"Successfully created zip file: {zip_filename}\n"
                         logging.info(status_message)
-                        persistent_final_zip_file = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
-                        shutil.copy(zip_filepath, persistent_final_zip_file.name)
-                        logging.info(f"Copied final zip to persistent temp path: {persistent_final_zip_file.name}")
-                        final_zip_path = persistent_final_zip_file.name
-                        persistent_zip_path_state = persistent_final_zip_file.name
 
+                        # --- Copy zip to a persistent location with the desired name ---
+                        persistent_final_zip_path = Path(tempfile.gettempdir()) / zip_filename
+                        try:
+                            shutil.copy(zip_filepath, persistent_final_zip_path)
+                            logging.info(f"Copied final zip to persistent temp path: {persistent_final_zip_path}")
+                            # Convert Path object to string for Gradio state and output
+                            final_zip_path = str(persistent_final_zip_path)
+                            persistent_zip_path_state = str(persistent_final_zip_path)
+                        except Exception as copy_final_err:
+                             logging.error(f"Error copying final zip from {zip_filepath} to {persistent_final_zip_path}: {copy_final_err}", exc_info=True)
+                             status_message += f"Error: Failed to copy final zip file: {copy_final_err}\n"
+                             final_zip_path = None
+                             persistent_zip_path_state = None
                     except Exception as e:
                         logging.error(f"Error creating zip file {zip_filepath}: {e}", exc_info=True)
-                        status_message += f"Error: Failed to create zip file: {e}\\n"
+                        status_message += f"Error: Failed to create zip file: {e}\n"
                         final_zip_path = None
                         persistent_zip_path_state = None
             else:
-                 status_message += "Skipping zip creation as processing might have failed early.\\n"
+                 status_message += "Skipping zip creation as processing might have failed early.\n"
                  final_zip_path = None
                  persistent_zip_path_state = None
 
@@ -303,14 +311,31 @@ def reset_state(current_zip_path: Optional[str], preview_cache_dir: Optional[str
     None # preview_cache_dir_state clear
 ]: # Now returns 9 items total
     """
-    Clears the UI elements, state, and the persistent preview cache directory.
+    Clears the UI elements, state, the persistent preview cache directory,
+    and the named temporary zip file.
     """
     status = "State reset."
+    zip_removed_status = ""
+    cache_removed_status = ""
+
+    # --- Clean up named temporary zip file ---
     if current_zip_path:
-        logging.info(f"Reset triggered. Clearing reference to temp zip file: {current_zip_path}")
-        status += f" Cleared reference to {Path(current_zip_path).name}. Gradio will handle cleanup."
+        zip_path = Path(current_zip_path)
+        logging.info(f"Reset triggered. Attempting to remove temp zip file: {zip_path}")
+        if zip_path.exists() and zip_path.is_file():
+            try:
+                zip_path.unlink() # Use unlink to remove the file
+                logging.info(f"Successfully removed temporary zip file: {zip_path}")
+                zip_removed_status = f" Removed temp file {zip_path.name}."
+            except Exception as e:
+                logging.error(f"Error removing temporary zip file {zip_path}: {e}", exc_info=True)
+                zip_removed_status = f" Error removing temp file {zip_path.name}: {e}."
+        else:
+            logging.warning(f"Temporary zip file path found in state ({current_zip_path}), but file does not exist or is not a file.")
+            zip_removed_status = f" Temp file {zip_path.name} not found."
     else:
         logging.info("Reset triggered. No temp zip file path was stored.")
+        zip_removed_status = ""
 
     # --- Clean up persistent preview cache directory ---
     if preview_cache_dir:
@@ -325,8 +350,13 @@ def reset_state(current_zip_path: Optional[str], preview_cache_dir: Optional[str
                 status += f" Error removing preview cache: {e}."
         else:
             logging.warning(f"Preview cache directory path found in state ({preview_cache_dir}), but directory does not exist or is not a directory.")
+            cache_removed_status = " Preview cache not found."
     else:
         logging.info("No preview cache directory path found in state to remove.")
+        cache_removed_status = ""
+
+    # Combine status messages
+    final_status = f"State reset.{zip_removed_status}{cache_removed_status}"
 
     # Clear the DataFrame, hide the results group, reset the dropdown, clear map state
     df_update = gr.update(value=None, label="DataFrame Preview")
@@ -336,7 +366,7 @@ def reset_state(current_zip_path: Optional[str], preview_cache_dir: Optional[str
     cache_dir_clear = None # Returning None clears State
 
     # 9 items: pdf_input, status_output, zip_output, zip_path_state, df_preview, df_results_group, unit_selector_dd, unit_data_map_state, preview_cache_dir_state
-    return None, status, None, None, df_update, group_update, dropdown_update, map_clear, cache_dir_clear
+    return None, final_status, None, None, df_update, group_update, dropdown_update, map_clear, cache_dir_clear
 
 
 # --- Gradio Interface Definition ---

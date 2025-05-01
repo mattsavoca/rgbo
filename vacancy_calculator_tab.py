@@ -515,7 +515,7 @@ def calculate_vacancy_allowance_interactive(
 def create_calculator_tab():
     """Creates the Gradio Blocks UI for the Vacancy Allowance Calculator tab."""
     with gr.Blocks() as calculator_tab:
-        gr.Markdown("## Vacancy Allowance Calculator (Based on Flowchart)")
+        gr.Markdown("## Vacancy Allowance Calculator")
         gr.Markdown("Enter the details below as per the flowchart to calculate the allowance.")
 
         if rgb_data is None or rgb_data.is_empty():
@@ -590,6 +590,13 @@ def create_calculator_tab():
         # Add a new Markdown component for notes/footnotes
         notes_output = gr.Markdown(label="Relevant Guideline Notes & Footnotes", value="Notes will appear here after calculation.")
         
+        # Function to update tenant tenure input based on new tenant status
+        def update_tenure_interactivity(new_tenant_status):
+            if new_tenant_status == "Yes":
+                return gr.update(value=0, interactive=False)
+            else:
+                return gr.update(interactive=True)
+
         # Function to determine visibility of conditional inputs based on term length and date
         def update_conditional_visibility(term, start_date):
             show_order_52_q = False
@@ -644,6 +651,13 @@ def create_calculator_tab():
             fn=update_conditional_visibility,
             inputs=[term_length_input, lease_start_input],
             outputs=[is_first_year_input, is_first_half_input] # Update both
+        )
+
+        # Event handler to update tenure input interactivity
+        new_tenant_input.change(
+            fn=update_tenure_interactivity,
+            inputs=[new_tenant_input],
+            outputs=[tenant_tenure_input]
         )
 
         # Event Handler for calculation
