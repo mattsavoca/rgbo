@@ -20,15 +20,27 @@ try:
     from scripts.calculate_vacancy_allowance import calculate_vacancy_allowance as backend_calculate_vacancy
     logging.info("Successfully imported calculation logic from scripts.calculate_vacancy_allowance")
     logic_available = True
+
+    # --- Load RGBO data right after successful import ---
+    log.info(f"Attempting to load RGBO data using load_rgb_orders from path hint: {RGBO_CSV_PATH}")
+    rgb_data = load_rgb_orders() # <<< Load the data here
+    if rgb_data is not None and not rgb_data.is_empty():
+        log.info(f"Successfully loaded RGBO data. Shape: {rgb_data.shape}. Button should be enabled.")
+    else:
+        # This case will also disable the button, which is correct if loading fails.
+        log.warning(f"load_rgb_orders completed but returned None or empty DataFrame. Path hint: {RGBO_CSV_PATH}. Button will be disabled.")
+        rgb_data = None # Ensure it's None if loading failed
+
 except ImportError as e:
     log.error(f"Fatal Error: Failed to import from calculate_vacancy_allowance: {e}. Calculator cannot function.", exc_info=True)
-    rgb_data = None
+    rgb_data = None # Ensure it's None
     def get_rates_for_date(*args, **kwargs): return None
     DATE_RANGES = {}
     logic_available = False
 except Exception as e:
+    # This will catch errors during load_rgb_orders() as well
     log.error(f"Fatal Error: An unexpected error occurred during import or RGBO data loading: {e}. Calculator cannot function.", exc_info=True)
-    rgb_data = None
+    rgb_data = None # Ensure it's None
     def get_rates_for_date(*args, **kwargs): return None
     DATE_RANGES = {}
     logic_available = False

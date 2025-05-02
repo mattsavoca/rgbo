@@ -17,3 +17,5 @@ dhcr*.pdf
 .vercel/
 cloudbuild.yaml
 local_launch/
+releases/
+guides/
