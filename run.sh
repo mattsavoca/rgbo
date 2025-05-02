@@ -214,14 +214,20 @@ echo "      Press CTRL+C in this terminal to stop the application."
 echo "---------------------------------------------------------------------"
 
 # Run in foreground so user sees output and can Ctrl+C
-"$PYTHON_EXEC" gradio_app.py &
-GRADIO_PID=$! # Get PID of background process
+"$PYTHON_EXEC" gradio_app.py
 
 # Give Gradio a moment to start up before trying to open the browser
-sleep 5
+# sleep 5 # <-- REMOVED (App blocks now, browser opening needs to be after app stops or handled differently)
 
 # 9. Open Browser (Best effort, uses default Gradio URL)
-echo "INFO: Attempting to open $GRADIO_DEFAULT_URL in your default browser..."
+# NOTE: Since the script now blocks until Gradio stops, automatically
+# opening the browser here won't work as intended. The user will need
+# to manually open the URL printed to the console *after* Gradio starts.
+# We can leave the attempt, but add a clearer message.
+
+echo "INFO: Gradio is starting. Once running, manually open the URL shown in the logs (usually $GRADIO_DEFAULT_URL) in your browser."
+echo "INFO: Attempting to open $GRADIO_DEFAULT_URL (might not work until Gradio is manually stopped)..." # Adjusted message
+
 if [[ "$OSTYPE" == "darwin"* ]]; then
   open "$GRADIO_DEFAULT_URL"
 elif command -v xdg-open &> /dev/null; then # Linux standard
@@ -236,7 +242,7 @@ fi
 
 # Wait for the Gradio process to finish (e.g., user presses Ctrl+C)
 # This keeps the script running until the app is stopped.
-wait $GRADIO_PID
+# wait $GRADIO_PID # <-- REMOVED
 echo "" # Newline after Ctrl+C output from Gradio
 echo "INFO: Gradio application stopped."
 
