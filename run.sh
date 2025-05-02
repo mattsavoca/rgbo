@@ -29,30 +29,12 @@ check_python_version() {
     echo "INFO: Found Python ($python_cmd) version: $version_str"
 
     # Version comparison (requires sort -V)
-    if [[ "$(printf '%s\\n' "$REQUIRED_PYTHON_VERSION" "$version_str" | sort -V | head -n1)" != "$REQUIRED_PYTHON_VERSION" ]]; then
+    if [[ "$(printf '%s\n' "$REQUIRED_PYTHON_VERSION" "$version_str" | sort -V | head -n1)" != "$REQUIRED_PYTHON_VERSION" ]]; then
         echo "WARN: Python version $version_str is older than required $REQUIRED_PYTHON_VERSION."
         return 1 # Version too old
     fi
     return 0 # Version is OK
 }
-
-# --- Cleanup Function ---
-cleanup() {
-    echo "" # Add a newline for separation
-    echo "INFO: Script exiting. Running cleanup..."
-    # Make sure stop.sh exists and is executable if needed, or just call with bash
-    if [ -f "stop.sh" ]; then
-        echo "INFO: Executing stop.sh to ensure Gradio processes are terminated..."
-        bash stop.sh # Use bash to run it, avoids needing +x permission
-    else
-        echo "WARN: stop.sh not found. Cannot perform automatic cleanup."
-    fi
-    echo "INFO: Cleanup finished."
-}
-
-# --- Trap Exit Signal ---
-# Run the cleanup function when the script exits for any reason (normal or signal)
-trap cleanup EXIT
 
 # --- Main Script ---
 
