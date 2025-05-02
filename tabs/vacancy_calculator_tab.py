@@ -10,42 +10,25 @@ log = logging.getLogger(__name__)
 if not log.hasHandlers():
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s [%(name)s] - %(message)s')
 
-# --- Import Core Logic ---
+# --- Import Logic Dependencies ---
 try:
-    # Assuming rgbo.csv is in the root
-    # Relative import from sibling 'scripts' directory
-    from ..scripts.calculate_vacancy_allowance import load_rgb_orders, get_rates_for_date, DATE_RANGES, RGBO_CSV_PATH
-    log.info("Successfully imported functions from calculate_vacancy_allowance.")
-    # Load RGBO data once when the module is loaded
-    rgb_data = load_rgb_orders(RGBO_CSV_PATH)
-    log.info(f"RGBO data loaded successfully for the calculator tab. Shape: {rgb_data.shape}")
-    # Ensure date columns are converted immediately after loading
-    if rgb_data is not None and not rgb_data.is_empty():
-        if rgb_data["beginning_date"].dtype != pl.Date:
-             try:
-                log.info("Converting date columns in global RGBO data to Date type...")
-                rgb_data = rgb_data.with_columns(pl.col(["beginning_date", "end_date"]).str.strptime(pl.Date, "%Y-%m-%d", strict=False))
-                log.info("Date columns converted successfully.")
-             except Exception as e:
-                 log.error(f"Failed to convert date columns in RGBO data: {e}", exc_info=True)
-                 rgb_data = None # Mark data as unusable if conversion fails
-except FileNotFoundError as e:
-    log.error(f"Fatal Error: RGBO CSV file not found at expected path ({RGBO_CSV_PATH}). Calculator cannot function. Error: {e}", exc_info=True)
-    rgb_data = None # Indicate data loading failure
-    # Define dummy functions to prevent NameErrors later if import failed partially
-    def get_rates_for_date(*args, **kwargs): return None
-    DATE_RANGES = {}
+    # Use standard import relative to project root
+    from scripts.calculate_vacancy_allowance import load_rgb_orders, get_rates_for_date, DATE_RANGES, RGBO_CSV_PATH
+    from scripts.calculate_vacancy_allowance import calculate_vacancy_allowance as backend_calculate_vacancy
+    logging.info("Successfully imported calculation logic from scripts.calculate_vacancy_allowance")
+    logic_available = True
 except ImportError as e:
     log.error(f"Fatal Error: Failed to import from calculate_vacancy_allowance: {e}. Calculator cannot function.", exc_info=True)
     rgb_data = None
     def get_rates_for_date(*args, **kwargs): return None
     DATE_RANGES = {}
+    logic_available = False
 except Exception as e:
     log.error(f"Fatal Error: An unexpected error occurred during import or RGBO data loading: {e}. Calculator cannot function.", exc_info=True)
     rgb_data = None
     def get_rates_for_date(*args, **kwargs): return None
     DATE_RANGES = {}
-
+    logic_available = False
 
 # --- Load Footnotes Data ---
 # Define path relative to this script's location (in 'tabs')
