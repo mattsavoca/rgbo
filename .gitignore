@@ -17,5 +17,3 @@ dhcr*.pdf
 .vercel/
 cloudbuild.yaml
 local_launch/
-*.bat
-*.sh
