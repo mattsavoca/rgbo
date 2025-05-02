@@ -1,6 +1,7 @@
 scratch/
 dhcr_output_csvs/
 temp_uploads/
+.cursor/
 sdk/
 __pycache__/
 archive/

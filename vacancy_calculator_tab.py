@@ -706,12 +706,16 @@ def create_calculator_tab(processed_data_state: gr.State): # <<< Accept shared s
             Returns:
                 An updated Gradio Dropdown component.
             """
-            unit_names = list(processed_data.keys()) if processed_data else []
-            log.info(f"Updating calculator tab dropdown with units: {unit_names}")
+            sorted_unit_names = sorted(list(processed_data.keys())) if processed_data else []
+            log.info(f"Updating calculator tab dropdown with units: {sorted_unit_names}")
+            # Select the first unit name as the default value if units exist, otherwise None
+            new_value = sorted_unit_names[0] if sorted_unit_names else None
+            log.info(f"Setting dropdown value to: {new_value}")
             # Keep existing value if it's still valid, otherwise reset
             # current_value = calculator_unit_selector_dd.value # Can't access component value directly here
             # new_value = current_value if current_value in unit_names else None
-            return gr.update(choices=sorted(unit_names), value=None, interactive=bool(unit_names))
+            # return gr.update(choices=sorted(unit_names), value=None, interactive=bool(unit_names)) # Old return
+            return gr.update(choices=sorted_unit_names, value=new_value, interactive=bool(sorted_unit_names)) # New return with default value
 
         # Function to update the DataFrame preview when a unit is selected
         def update_calculator_df_preview(selected_unit: str, processed_data: Dict[str, pl.DataFrame]) -> gr.DataFrame:

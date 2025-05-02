@@ -36,7 +36,7 @@ else:
 # Specify the Gemini model to use
 # Use a model that supports PDF processing, like gemini-2.0-flash-exp
 # Check the Gemini documentation for the latest recommended models supporting PDF input.
-MODEL_NAME = "gemini-2.0-flash-lite" 
+MODEL_NAME = os.environ.get("GEMINI_MODEL")
 LEN_TIMEOUT = 1000 * 60 # (in miliseconds) 
 # Directory for output CSV files when run as script
 DEFAULT_OUTPUT_DIR = Path("./dhcr_output_csvs")
