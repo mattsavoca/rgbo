@@ -35,11 +35,11 @@ Even though this application runs locally via Docker, the core PDF data extracti
 5.  **Start the Application**: Run the command: `bash run.sh`
     *   The first time you run this, it will:
         *   Prompt you for your Gemini API Key if it hasn't been saved yet.
-        *   Build the Docker image (this might take a few minutes).
-        *   Start the application container.
+        *   Build and download the application files image (this might take a few minutes).
+        *   Start the application container and open the app in your default browser.
     *   Subsequent runs will just start the container (rebuilding only if necessary).
 4.  **Access the Application**:
-    *   Open your web browser and go to: [http://localhost:8080](http://localhost:8080)
+    *   Open your web browser and go to: [http://127.0.0.1:7865] (the final 4 digits may shift if that address is unavilable on your machine)
 5.  **Stop the Application**:
     While this should not be needed, since the app is designed to clean up after iteslf, here is how to close instances of the app:
     *   Right-click the `rgbo_main` folder (the folder `config` was inside of) and select `New Terminal at Folder`
