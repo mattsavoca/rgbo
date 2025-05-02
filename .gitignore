@@ -15,7 +15,6 @@ workflow_update_042125.mp4
 apt_sample.csv
 dhcr*.pdf
 .vercel/
-Dockerfile
 cloudbuild.yaml
 local_launch/
 *.bat
