@@ -1,120 +1,180 @@
 #!/bin/bash
 
-# Script to set up the environment, build, and run the Docker container for the DHCR Parser app
+# Script to set up environment and run the DHCR Parser Gradio app locally
 
-# --- Start Setup Block ---
+# --- Configuration ---
+CONFIG_FILE="config"
 ENV_FILE=".env"
-GEMINI_API_KEY_PRESENT=false
+VENV_DIR="venv"
+REQUIRED_PYTHON_VERSION="3.11" # Minimum required version
+GRADIO_DEFAULT_URL="http://127.0.0.1:7860" # Default Gradio URL
 
-# Function to prompt for API key and update .env
-prompt_and_update_env() {
-    echo ""
-    echo "---------------------------------------------------------------------"
-    echo "You **need a Gemini API key** to run the analysis features."
-    echo "Get one for free at https://ai.google.dev/"
-    echo "---------------------------------------------------------------------"
-    echo ""
-    read -p "Please paste your Gemini API Key and press Enter: " GEMINI_API_KEY_INPUT
+echo "--- DHCR Parser Local Runner ---"
+echo "INFO: This script should be run WITHOUT admin/sudo privileges."
 
-    # Validate if the key looks potentially empty (basic check)
-    if [ -z "$GEMINI_API_KEY_INPUT" ]; then
-        echo "Warning: No API key entered. Analysis features requiring the key will fail."
-        # Decide if you want to exit or continue without a key
-        # exit 1 # Uncomment to exit if key is mandatory
+# --- Helper Functions ---
+check_python_version() {
+    local python_cmd=$1
+    if ! command -v $python_cmd &> /dev/null; then
+        return 1 # Command not found
     fi
 
-    echo "Updating $ENV_FILE..."
-    # Overwrite or create the file with the new content
-    cat << EOF > "$ENV_FILE"
-GEMINI_API_KEY=${GEMINI_API_KEY_INPUT}
-GEMINI_MODEL="gemini-1.5-flash-latest"
-EOF
-    GEMINI_API_KEY_PRESENT=true
-    echo "$ENV_FILE has been updated."
-    echo "---------------------------------------------------------------------"
-    echo ""
+    # Get version X.Y
+    local version_str=$($python_cmd -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)
+    if [ -z "$version_str" ]; then
+        echo "WARN: Could not determine Python version for $python_cmd."
+        return 1 # Version check failed
+    fi
+
+    echo "INFO: Found Python ($python_cmd) version: $version_str"
+
+    # Version comparison (requires sort -V)
+    if [[ "$(printf '%s\n' "$REQUIRED_PYTHON_VERSION" "$version_str" | sort -V | head -n1)" != "$REQUIRED_PYTHON_VERSION" ]]; then
+        echo "WARN: Python version $version_str is older than required $REQUIRED_PYTHON_VERSION."
+        return 1 # Version too old
+    fi
+    return 0 # Version is OK
 }
 
-# 1. Check if .env file exists and contains the API key
-if [ -f "$ENV_FILE" ]; then
-    echo "$ENV_FILE found."
-    # Check if GEMINI_API_KEY is present and non-empty within the file
-    if grep -q "^GEMINI_API_KEY=.\+" "$ENV_FILE"; then
-        echo "Gemini API Key found in $ENV_FILE."
-        GEMINI_API_KEY_PRESENT=true
-    else
-        echo "Gemini API Key not found or is empty in $ENV_FILE."
-        prompt_and_update_env
+# --- Main Script ---
+
+# 1. Check for config file
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "ERROR: Configuration file '$CONFIG_FILE' not found."
+    echo "Please ensure '$CONFIG_FILE' exists in the same directory as this script."
+    # You could create a default one here if you prefer:
+    # echo "INFO: Creating a default '$CONFIG_FILE'. Please edit it with your API key."
+    # cat << EOF > "$CONFIG_FILE"
+# GEMINI_API_KEY=PLACEHOLDER
+# GEMINI_MODEL="gemini-1.5-flash-latest"
+# EOF
+    exit 1
+fi
+echo "INFO: Found configuration file: $CONFIG_FILE"
+
+# 2. Check API Key Placeholder in config
+# Using grep -F to treat the string literally, just in case
+if grep -q -F "GEMINI_API_KEY=PLACEHOLDER" "$CONFIG_FILE"; then
+    echo "---------------------------------------------------------------------"
+    echo "ACTION REQUIRED:"
+    echo "Please open the '$CONFIG_FILE' file and replace 'PLACEHOLDER'"
+    echo "with your actual Google AI Gemini API Key."
+    echo "Get one for free at https://ai.google.dev/"
+    echo "---------------------------------------------------------------------"
+    echo "Re-run this script after updating the file."
+    exit 1
+fi
+echo "INFO: Gemini API Key seems to be set in $CONFIG_FILE."
+
+# 3. Find suitable Python command (python3 or python)
+PYTHON_CMD=""
+if check_python_version "python3"; then
+    PYTHON_CMD="python3"
+elif check_python_version "python"; then
+    PYTHON_CMD="python"
+else
+    echo "---------------------------------------------------------------------"
+    echo "ERROR: No suitable Python installation found."
+    echo "Please install Python $REQUIRED_PYTHON_VERSION or later and ensure 'python3' or 'python'"
+    echo "is available in your system's PATH."
+    echo "Download from: https://www.python.org/"
+    echo "---------------------------------------------------------------------"
+    exit 1
+fi
+echo "INFO: Using Python command: $PYTHON_CMD"
+
+
+# 4. Determine Platform Specific Paths for venv executables
+PYTHON_EXEC=""
+PIP_EXEC=""
+if [[ "$OSTYPE" == "linux-gnu"* || "$OSTYPE" == "darwin"* ]]; then
+    PYTHON_EXEC="$VENV_DIR/bin/python"
+    PIP_EXEC="$VENV_DIR/bin/pip"
+elif [[ "$OSTYPE" == "cygwin" || "$OSTYPE" == "msys" ]]; then # Git Bash, Cygwin
+    PYTHON_EXEC="$VENV_DIR/Scripts/python.exe"
+    PIP_EXEC="$VENV_DIR/Scripts/pip.exe"
+# elif [[ "$OSTYPE" == "win32" ]]; then # Native Windows - .sh script won't run here easily
+    # This block is unlikely to be hit by run.sh but included for context
+    # PYTHON_EXEC="$VENV_DIR\Scripts\python.exe"
+    # PIP_EXEC="$VENV_DIR\Scripts\pip.exe"
+else
+    echo "ERROR: Unsupported operating system '$OSTYPE'. Cannot determine venv paths."
+    echo "This script primarily supports Linux, macOS, and Windows (via Git Bash/WSL)."
+    exit 1
+fi
+
+
+# 5. Check/Create Virtual Environment
+if [ ! -d "$VENV_DIR" ]; then
+    echo "INFO: Creating Python virtual environment in './$VENV_DIR'..."
+    $PYTHON_CMD -m venv "$VENV_DIR"
+    if [ $? -ne 0 ]; then
+        echo "ERROR: Failed to create virtual environment using '$PYTHON_CMD -m venv $VENV_DIR'."
+        exit 1
     fi
+    echo "INFO: Virtual environment created."
 else
-    echo "$ENV_FILE not found."
-    prompt_and_update_env
+    echo "INFO: Virtual environment './$VENV_DIR' already exists."
 fi
 
-# Optional: Exit if API key is mandatory and wasn't provided
-# if [ "$GEMINI_API_KEY_PRESENT" = false ]; then
-#     echo "Error: Gemini API Key is required but was not provided. Exiting."
-#     exit 1
-# fi
-# --- End Setup Block ---
-
-# Script to build and run the Docker container for the DHCR Parser app
-
-IMAGE_NAME="dhcr-parser-app"
-CONTAINER_NAME="dhcr-parser-container"
-
-# Build the Docker image
-echo "Building Docker image: $IMAGE_NAME..."
-docker build -t $IMAGE_NAME .
-
+# 6. Install/Upgrade Requirements into venv using the venv's pip
+echo "INFO: Installing/upgrading dependencies from requirements.txt..."
+"$PYTHON_EXEC" -m pip install --upgrade pip # Upgrade pip in venv
 if [ $? -ne 0 ]; then
-    echo "Docker build failed. Exiting."
+    echo "WARN: Failed to upgrade pip in the virtual environment. Continuing installation..."
+fi
+
+"$PIP_EXEC" install -r requirements.txt
+if [ $? -ne 0 ]; then
+    echo "ERROR: Failed to install dependencies from requirements.txt using '$PIP_EXEC'."
+    echo "Check your internet connection and the contents of requirements.txt."
     exit 1
 fi
+echo "INFO: Dependencies installed successfully."
 
-echo "Build successful."
-
-# Check if a container with the same name is already running
-if [ $(docker ps -q -f name=^/${CONTAINER_NAME}$) ]; then
-    echo "Container $CONTAINER_NAME is already running. Stopping and removing it..."
-    docker stop $CONTAINER_NAME
-    # No need to remove if using --rm on run
-fi
-
-# Check if a container with the same name exists (but is stopped)
-if [ $(docker ps -aq -f status=exited -f name=^/${CONTAINER_NAME}$) ]; then
-    echo "Removing existing stopped container $CONTAINER_NAME..."
-    docker rm $CONTAINER_NAME
-fi
-
-# Run the Docker container
-echo "Running Docker container: $CONTAINER_NAME..."
-echo "Access the application at http://localhost:8080"
-
-# Run in detached mode (-d)
-# Automatically remove the container when it exits (--rm)
-# Map port 8080 on the host to port 8080 in the container (-p 8080:8080)
-# Give the container a name (--name)
-# Optional: Mount a local .env file (replace /path/to/your/.env with actual path)
-# docker run --rm -d -p 8080:8080 --name $CONTAINER_NAME --env-file /path/to/your/.env $IMAGE_NAME
-# Use the .env file in the current directory
-docker run --rm -d -p 8080:8080 --name $CONTAINER_NAME --env-file .env $IMAGE_NAME
-
+# 7. Create .env file from config
+echo "INFO: Creating/updating $ENV_FILE from $CONFIG_FILE..."
+cp "$CONFIG_FILE" "$ENV_FILE"
 if [ $? -ne 0 ]; then
-    echo "Failed to start Docker container $CONTAINER_NAME. Check Docker logs."
+    echo "ERROR: Failed to copy $CONFIG_FILE to $ENV_FILE."
     exit 1
 fi
+echo "INFO: $ENV_FILE created/updated."
 
-echo "Container $CONTAINER_NAME started successfully."
+# 8. Run Gradio App using venv python
+echo "---------------------------------------------------------------------"
+echo "INFO: Starting the Gradio application..."
+echo "      Access it in your browser, usually at: $GRADIO_DEFAULT_URL"
+echo "      (Check terminal output below for the exact URL if different)"
+echo "      Press CTRL+C in this terminal to stop the application."
+echo "---------------------------------------------------------------------"
 
-# Attempt to open the browser
-echo "Attempting to open the application in your default browser..."
-if [[ "$(uname)" == "Darwin" ]]; then
-  open http://localhost:8080
-elif [[ "$(uname)" == "Linux" ]]; then
-  xdg-open http://localhost:8080
+# Run in foreground so user sees output and can Ctrl+C
+"$PYTHON_EXEC" gradio_app.py &
+GRADIO_PID=$! # Get PID of background process
+
+# Give Gradio a moment to start up before trying to open the browser
+sleep 5
+
+# 9. Open Browser (Best effort, uses default Gradio URL)
+echo "INFO: Attempting to open $GRADIO_DEFAULT_URL in your default browser..."
+if [[ "$OSTYPE" == "darwin"* ]]; then
+  open "$GRADIO_DEFAULT_URL"
+elif command -v xdg-open &> /dev/null; then # Linux standard
+  xdg-open "$GRADIO_DEFAULT_URL"
+elif command -v cygstart &> /dev/null; then # Cygwin
+  cygstart "$GRADIO_DEFAULT_URL"
+elif [[ "$OSTYPE" == "msys" ]] && command -v start &> /dev/null; then # Git Bash on Windows might have 'start'
+   start "" "$GRADIO_DEFAULT_URL" # Needs empty title argument for start
 else
-  echo "Could not automatically open browser. Please navigate to http://localhost:8080 manually."
+  echo "WARN: Could not automatically open browser. Please navigate to the URL shown above manually."
 fi
 
-exit 0 # Exit cleanly after potentially opening browser 
+# Wait for the Gradio process to finish (e.g., user presses Ctrl+C)
+# This keeps the script running until the app is stopped.
+wait $GRADIO_PID
+echo "" # Newline after Ctrl+C output from Gradio
+echo "INFO: Gradio application stopped."
+
+echo "--- Script finished ---"
+exit 0 
