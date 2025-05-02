@@ -21,12 +21,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest of the application code into the container at /app
 # Ensure ALL necessary .py files and data files (like rgbo.csv) are copied
-COPY main.py .
-COPY pdf_handler.py .
-COPY pdf_pipeline.py .
-COPY pdf_to_png.py .
-COPY calculate_vacancy_allowance.py .
+COPY gradio_app.py .
+COPY scripts/ ./scripts/
+COPY tabs/ ./tabs/
 COPY rgbo.csv .
+COPY footnotes.csv .
 # Copy .env file if you want to bundle API keys (NOT RECOMMENDED FOR SHARING)
 # Better to mount or use environment variables in 'docker run'
 # COPY .env .
@@ -36,11 +35,15 @@ COPY rgbo.csv .
 EXPOSE 8080
 
 # Define environment variable for the port (aligns with main.py)
-ENV PORT=8080
+# Gradio uses 7860 by default, but Cloud Run expects 8080 unless configured otherwise.
+# We'll need to tell Gradio to use this port when launching.
+# However, Gradio's demo.launch() doesn't easily take PORT env var directly for the server port.
+# It's simpler to run it directly and let Cloud Run map the default Gradio port (7860) or configure Cloud Run service port.
+# Sticking with 8080 for EXPOSE as it's common convention. The CMD will use Gradio's default.
+# Or we can modify gradio_app.py to read the PORT env var.
+# For now, let's keep EXPOSE 8080 and run Gradio directly.
+# ENV PORT=8080 # Keep this if gradio_app.py is modified to use it
 
-# Run main.py when the container launches
-# The command uses uvicorn directly, which is common for ASGI apps like FastAPI/Starlette/FastHTML
-# If your serve() function in main.py handles host/port correctly, this might also work:
-# CMD ["python", "main.py"]
-# Using uvicorn provides more control and is standard practice:
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"] 
+# Run gradio_app.py when the container launches
+# Using python directly is standard for Gradio apps.
+CMD ["python", "gradio_app.py"] 
