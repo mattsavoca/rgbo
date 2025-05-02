@@ -20,3 +20,5 @@ dhcr.pdf
 Dockerfile
 cloudbuild.yaml
 local_launch/
+*.bat
+*.sh

@@ -8,10 +8,11 @@ import os # Make sure os is imported if not already
 
 # Attempt to import the necessary function and dependencies from pdf_pipeline
 try:
-    from pdf_pipeline import process_pdf, pdf_to_images
-    # Assuming pdf_to_images handles its own dependencies like Poppler
+    from .pdf_pipeline import process_pdf # Relative import
+    # Removed pdf_to_images import as it's used within process_pdf
+    # Assuming pdf_pipeline handles its internal imports (like pdf_to_png)
 except ImportError as e:
-    logging.error(f"Failed to import from pdf_pipeline: {e}")
+    logging.error(f"Failed to import from .pdf_pipeline: {e}")
     # Define dummy functions if import fails, to prevent app crash
     def process_pdf(*args, **kwargs):
         logging.error("pdf_pipeline.process_pdf could not be imported.")
@@ -22,9 +23,10 @@ except ImportError as e:
 
 # Import vacancy calculation logic
 try:
-    from calculate_vacancy_allowance import calculate_vacancy_allowance, load_rgb_orders
+    # Relative import from the same directory now
+    from .calculate_vacancy_allowance import calculate_vacancy_allowance, load_rgb_orders
 except ImportError as e:
-    logging.error(f"Failed to import from calculate_vacancy_allowance: {e}")
+    logging.error(f"Failed to import from .calculate_vacancy_allowance: {e}")
     def calculate_vacancy_allowance(*args, **kwargs):
         logging.error("calculate_vacancy_allowance could not be imported.")
         return "Error: Calculation function unavailable"
@@ -37,10 +39,10 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s [PDF
 
 # --- Load RGBO Data ---
 # Get the directory where this script (pdf_handler.py) resides
-HANDLER_DIR = Path(__file__).parent.resolve()
-# Construct the path to rgbo.csv relative to this script's directory
-# Assumes rgbo.csv is in the SAME directory as pdf_handler.py and app.py
-RGBO_CSV_FULL_PATH = HANDLER_DIR / "rgbo.csv"
+HANDLER_DIR = Path(__file__).parent.resolve() # This will now be the 'scripts' directory
+# Construct the path to rgbo.csv relative to the PARENT of this script's directory
+# Assumes rgbo.csv is in the root directory (one level up from 'scripts')
+RGBO_CSV_FULL_PATH = HANDLER_DIR.parent / "rgbo.csv"
 
 # Load this once when the module is loaded.
 # Consider potential issues if the app runs long and the CSV changes.

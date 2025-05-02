@@ -13,7 +13,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s [GRA
 
 # Import the calculator tab creator FIRST (after logging config)
 try:
-    from vacancy_calculator_tab import create_calculator_tab
+    from tabs.vacancy_calculator_tab import create_calculator_tab
     # Use logging directly here as it's configured just above
     logging.info("Successfully imported UI builder from vacancy_calculator_tab.")
     calculator_tab_available = True
@@ -33,7 +33,7 @@ try:
     from dotenv import load_dotenv
     load_dotenv()
     logging.info("Attempting to load environment variables from .env file.")
-    from pdf_handler import run_pdf_processing
+    from scripts.pdf_handler import run_pdf_processing
     logging.info("Successfully imported run_pdf_processing from pdf_handler.")
 except ImportError as e:
     logging.error(f"Fatal Error: Failed to import core processing logic: {e}", exc_info=True)

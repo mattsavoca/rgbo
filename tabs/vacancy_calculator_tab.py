@@ -3,6 +3,7 @@ from datetime import datetime, date
 import logging
 import polars as pl # Use polars for consistency if needed by imported functions
 from typing import Tuple, Dict, Optional, List # Import Tuple for type hinting, Dict/Optional for footnote lookup, List for dropdown choices
+from pathlib import Path # Ensure Path is imported
 
 # Configure logging for this module
 log = logging.getLogger(__name__)
@@ -11,8 +12,9 @@ if not log.hasHandlers():
 
 # --- Import Core Logic ---
 try:
-    # Assuming rgbo.csv is in the root and calculate_vacancy_allowance.py is importable
-    from calculate_vacancy_allowance import load_rgb_orders, get_rates_for_date, DATE_RANGES, RGBO_CSV_PATH
+    # Assuming rgbo.csv is in the root
+    # Relative import from sibling 'scripts' directory
+    from ..scripts.calculate_vacancy_allowance import load_rgb_orders, get_rates_for_date, DATE_RANGES, RGBO_CSV_PATH
     log.info("Successfully imported functions from calculate_vacancy_allowance.")
     # Load RGBO data once when the module is loaded
     rgb_data = load_rgb_orders(RGBO_CSV_PATH)
@@ -46,9 +48,14 @@ except Exception as e:
 
 
 # --- Load Footnotes Data ---
-FOOTNOTES_CSV_PATH = "footnotes.csv"
+# Define path relative to this script's location (in 'tabs')
+SCRIPT_DIR = Path(__file__).parent.resolve() # 'tabs' directory
+FOOTNOTES_CSV_PATH = SCRIPT_DIR.parent / "footnotes.csv" # Go up one level to root
+
 footnotes_dict: Dict[str, str] = {}
 try:
+    # Use the absolute path
+    log.info(f"Attempting to load footnotes from calculated path: {FOOTNOTES_CSV_PATH}")
     footnotes_df = pl.read_csv(FOOTNOTES_CSV_PATH).with_columns(pl.col("footnote_no").cast(pl.Utf8))
     footnotes_dict = dict(zip(footnotes_df["footnote_no"].to_list(), footnotes_df["note"].to_list()))
     log.info(f"Successfully loaded {len(footnotes_dict)} footnotes from {FOOTNOTES_CSV_PATH}.")

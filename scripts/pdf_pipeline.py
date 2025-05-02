@@ -15,7 +15,8 @@ import logging
 import time
 from dotenv import load_dotenv # Import dotenv
 import argparse # Import argparse
-from pdf_to_png import pdf_to_images # Import the image conversion function
+# Relative import from the same directory
+from .pdf_to_png import pdf_to_images
 
 # --- Load Environment Variables --- #
 load_dotenv() # Load variables from .env file
