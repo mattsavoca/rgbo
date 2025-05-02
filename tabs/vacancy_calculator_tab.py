@@ -10,6 +10,9 @@ log = logging.getLogger(__name__)
 if not log.hasHandlers():
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s [%(name)s] - %(message)s')
 
+# --- Initialize RGBO data variable ---
+rgb_data: Optional[pl.DataFrame] = None # Initialize here
+
 # --- Import Logic Dependencies ---
 try:
     # Use standard import relative to project root
