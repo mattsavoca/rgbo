@@ -193,14 +193,17 @@ if [ $? -ne 0 ]; then
 fi
 echo "INFO: Dependencies installed successfully."
 
-# 7. Create .env file from config
-echo "INFO: Creating/updating $ENV_FILE from $CONFIG_FILE..."
-cp "$CONFIG_FILE" "$ENV_FILE"
+# 7. Source environment variables from config file
+echo "INFO: Sourcing environment variables from $CONFIG_FILE..."
+set -a # Automatically export all variables defined from now
+source "$CONFIG_FILE"
+set +a # Stop automatically exporting variables
 if [ $? -ne 0 ]; then
-    echo "ERROR: Failed to copy $CONFIG_FILE to $ENV_FILE."
+    echo "ERROR: Failed to source environment variables from $CONFIG_FILE."
+    echo "Check if the file exists and has the correct format (KEY=VALUE)." 
     exit 1
 fi
-echo "INFO: $ENV_FILE created/updated."
+echo "INFO: Environment variables sourced."
 
 # 8. Run Gradio App using venv python
 echo "---------------------------------------------------------------------"

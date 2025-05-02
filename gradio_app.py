@@ -30,9 +30,27 @@ except ImportError as e:
 # --- Import Core Logic ---
 # DHCR PDF Parser Logic
 try:
-    from dotenv import load_dotenv
-    load_dotenv()
-    logging.info("Attempting to load environment variables from .env file.")
+    # Check if API key is already in environment (e.g., from run.sh sourcing)
+    if os.environ.get("GEMINI_API_KEY"):
+        logging.info("GEMINI_API_KEY found in environment variables.")
+    else:
+        # If not in env, try loading from .env file as a fallback
+        logging.info("GEMINI_API_KEY not found in environment. Attempting to load from .env file.")
+        try:
+            from dotenv import load_dotenv
+            # Load from default .env path
+            if load_dotenv(): 
+                logging.info("Successfully loaded environment variables from .env file.")
+            else:
+                logging.warning(".env file not found or empty. Proceeding without loading from .env.")
+        except ImportError:
+            logging.warning("'python-dotenv' package not found. Cannot load .env file. Relying on existing environment variables.")
+        # Check again after attempting to load .env
+        if not os.environ.get("GEMINI_API_KEY"):
+            logging.warning("GEMINI_API_KEY still not found after checking environment and .env file.")
+            # NOTE: The app might fail later if the key is required but not found
+    
+    # Now proceed with imports that might depend on the API key
     from scripts.pdf_handler import run_pdf_processing
     logging.info("Successfully imported run_pdf_processing from pdf_handler.")
 except ImportError as e:
@@ -41,14 +59,14 @@ except ImportError as e:
         logging.error("run_pdf_processing function is unavailable due to import error.")
         raise RuntimeError("Core DHCR PDF processing logic failed to load. Cannot continue.") from e
 except Exception as e:
-     logging.error(f"An unexpected error occurred during DHCR import or env loading: {e}", exc_info=True)
+     logging.error(f"An unexpected error occurred during DHCR import or env checking: {e}", exc_info=True)
      def run_pdf_processing(*args, **kwargs):
         logging.error("run_pdf_processing function is unavailable due to an unexpected setup error.")
         raise RuntimeError("Core DHCR PDF processing logic failed to load. Cannot continue.") from e
 
 # CBB PDF Parser Logic
 try:
-    # .env already loaded above
+    # No need to check/load env again, assume it was handled above
     from scripts.cbb_handler import run_cbb_processing
     logging.info("Successfully imported run_cbb_processing from cbb_handler.")
 except ImportError as e:
