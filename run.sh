@@ -73,13 +73,74 @@ if check_python_version "python3"; then
 elif check_python_version "python"; then
     PYTHON_CMD="python"
 else
-    echo "---------------------------------------------------------------------"
-    echo "ERROR: No suitable Python installation found."
-    echo "Please install Python $REQUIRED_PYTHON_VERSION or later and ensure 'python3' or 'python'"
-    echo "is available in your system's PATH."
-    echo "Download from: https://www.python.org/"
-    echo "---------------------------------------------------------------------"
-    exit 1
+    # Check if on macOS
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        echo "INFO: No suitable Python $REQUIRED_PYTHON_VERSION+ found on macOS. Attempting to install/update via Homebrew..."
+
+        # 1. Check for Homebrew
+        if ! command -v brew &> /dev/null; then
+            echo "INFO: Homebrew not found. Attempting to install Homebrew..."
+            # Run the official Homebrew installer script
+            /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+            if [ $? -ne 0 ]; then
+                echo "---------------------------------------------------------------------"
+                echo "ERROR: Homebrew installation failed."
+                echo "Please try installing Homebrew manually:"
+                echo '  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+                echo "And then re-run this script ($0)."
+                echo "---------------------------------------------------------------------"
+                exit 1
+            fi
+            echo "INFO: Homebrew installed successfully."
+            # NOTE: Homebrew might add itself to the PATH in shell config files,
+            # but it might not be available *immediately* in this script's session.
+            # We proceed hoping it's available or the user restarts the terminal if needed.
+            # Adding brew to PATH explicitly here is tricky and varies.
+        else
+            echo "INFO: Homebrew is already installed."
+        fi
+
+        # 2. Install/Update Python using Homebrew
+        echo "INFO: Attempting to install/update Python via Homebrew (brew install python)..."
+        brew install python
+        if [ $? -ne 0 ]; then
+            echo "---------------------------------------------------------------------"
+            echo "ERROR: Failed to install Python using 'brew install python'."
+            echo "Please try running 'brew update && brew install python' manually,"
+            echo "ensure Python $REQUIRED_PYTHON_VERSION+ is installed and in your PATH,"
+            echo "and then re-run this script ($0)."
+            echo "---------------------------------------------------------------------"
+            exit 1
+        fi
+        echo "INFO: Python installed/updated via Homebrew."
+
+        # 3. Re-check for Python command after installation attempt
+        echo "INFO: Re-checking for Python command..."
+        if check_python_version "python3"; then
+            PYTHON_CMD="python3"
+        # It's less likely plain 'python' would be the Homebrew one, but check anyway
+        elif check_python_version "python"; then
+             PYTHON_CMD="python"
+        else
+             echo "---------------------------------------------------------------------"
+             echo "ERROR: Python installed via Homebrew, but still couldn't find a suitable command."
+             echo "Please ensure Homebrew's Python is in your PATH."
+             echo "You may need to restart your terminal or follow instructions from 'brew info python'."
+             echo "Re-run this script ($0) once Python $REQUIRED_PYTHON_VERSION+ is accessible."
+             echo "---------------------------------------------------------------------"
+             exit 1
+        fi
+
+    else
+        # Original error for non-macOS systems
+        echo "---------------------------------------------------------------------"
+        echo "ERROR: No suitable Python installation found."
+        echo "Please install Python $REQUIRED_PYTHON_VERSION or later and ensure 'python3' or 'python'"
+        echo "is available in your system's PATH."
+        echo "Download from: https://www.python.org/"
+        echo "---------------------------------------------------------------------"
+        exit 1
+    fi
 fi
 echo "INFO: Using Python command: $PYTHON_CMD"
 
