@@ -13,9 +13,7 @@ vacancy_allowance_flowchart.png
 poppler-24.08.0/
 workflow_update_042125.mp4
 apt_sample.csv
-dhcr_small.pdf
-dhcr_tiny.pdf
-dhcr.pdf
+dhcr*.pdf
 .vercel/
 Dockerfile
 cloudbuild.yaml

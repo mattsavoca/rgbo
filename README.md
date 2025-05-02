@@ -11,61 +11,57 @@ It is packaged using Docker for easy local execution.
 
 ## !! IMPORTANT: Gemini API Key Required !!
 
-Even though this application runs locally via Docker, the core PDF data extraction logic in `pdf_pipeline.py` **still relies on Google's Gemini API**. This means:
+Even though this application runs locally via Docker, the core PDF data extraction logic **still relies on Google's Gemini API**. This means:
 
 1.  You **need an internet connection** when processing PDFs.
 2.  You **need a Gemini API key**.
-    *   Get one here: [https://ai.google.dev/](https://ai.google.dev/)
-3.  You must make the API key available to the application inside the Docker container.
+    *   Get one for free here: [https://ai.google.dev/](https://ai.google.dev/)
 
-**How to provide the API Key:**
+**How the API Key is Handled:**
 
-The recommended way is to create a file named `.env` in the *same directory* as this README file and the `Dockerfile`. Add your API key to this file:
+*   When you run the application for the first time using the `run.sh` (Mac/Linux) or `run.bat` (Windows) script, it will **automatically check** if a `.env` file containing your API key exists in the same directory.
+*   If the file or the key is missing, the script will **prompt you** to paste your Gemini API Key directly into the terminal/command prompt.
+*   The script will then create or update the `.env` file for you with the key you provide.
+*   Subsequent runs will use the key stored in the `.env` file without prompting you again.
 
-```.env
-GEMINI_API_KEY=YOUR_API_KEY_HERE
-```
+**Note to Developers: Never commit a `.env` file to version control platforms. It contains your secret API key.)**
 
-Replace `YOUR_API_KEY_HERE` with your actual key.
+## Mac/Linux Usage
 
-Then, you need to slightly modify the `docker run` command in `run.sh` and `run.bat` to mount this file. Uncomment and adjust the lines that look like this:
+1.  **Open a Terminal** in the directory containing this README file and the other scripts (`Dockerfile`, `run.sh`, `stop.sh`, etc.).
+2.  **Make the Run Script Executable (One-Time Step)**:
+    *   Run the command: `chmod +x run.sh`
+    *   You only need to do this once.
+3.  **Start the Application**:
+    *   Run the command: `./run.sh`
+    *   The first time you run this, it will:
+        *   Prompt you for your Gemini API Key if it hasn't been saved yet.
+        *   Build the Docker image (this might take a few minutes).
+        *   Start the application container.
+    *   Subsequent runs will just start the container (rebuilding only if necessary).
+4.  **Access the Application**:
+    *   Open your web browser and go to: [http://localhost:8080](http://localhost:8080)
+5.  **Stop the Application**:
+    *   Open a Terminal in the same directory.
+    *   Run the command: `./stop.sh`
+    *   This will stop and remove the running Docker container.
 
-*   In `run.sh`:
-    ```bash
-    # Optional: Mount a local .env file (replace /path/to/your/.env with actual path)
-    # docker run --rm -d -p 8080:8080 --name $CONTAINER_NAME --env-file /path/to/your/.env $IMAGE_NAME
-    # MODIFY TO:
-    docker run --rm -d -p 8080:8080 --name $CONTAINER_NAME --env-file .env $IMAGE_NAME
-    ```
-*   In `run.bat`:
-    ```bat
-    REM Optional: Mount a local .env file (replace C:\path\to\your\.env with actual path)
-    REM docker run --rm -d -p 8080:8080 --name %CONTAINER_NAME% --env-file C:\path\to\your\.env %IMAGE_NAME%
-    REM MODIFY TO:
-    docker run --rm -d -p 8080:8080 --name %CONTAINER_NAME% --env-file .env %IMAGE_NAME%
-    ```
+## Windows Usage
 
-**(Do not commit your `.env` file to version control if you use Git!)**
-
-## How to Run
-
-1.  **Open a Terminal or Command Prompt** in the directory containing this README file and the other scripts (`Dockerfile`, `run.sh`, `run.bat`, etc.).
-2.  **Build and Start the Application:**
-    *   **Linux/macOS**: Run `./run.sh`
-    *   **Windows**: Run `run.bat`
-
-    This script will first build the Docker image (which might take a few minutes the first time) and then start the application container in the background.
-3.  **Access the Application**: Open your web browser and go to:
-    [http://localhost:8080](http://localhost:8080)
-
-## How to Stop
-
-1.  **Open a Terminal or Command Prompt** in the same directory.
-2.  **Stop the Application:**
-    *   **Linux/macOS**: Run `./stop.sh`
-    *   **Windows**: Run `stop.bat`
-
-    This will stop the running Docker container. Because it was started with `--rm`, Docker will also automatically remove the container, cleaning up its resources.
+1.  **Open a Command Prompt or PowerShell** in the directory containing this README file and the other scripts (`Dockerfile`, `run.bat`, `stop.bat`, etc.).
+2.  **Start the Application**:
+    *   Run the command: `run.bat`
+    *   The first time you run this, it will:
+        *   Prompt you for your Gemini API Key if it hasn't been saved yet.
+        *   Build the Docker image (this might take a few minutes).
+        *   Start the application container.
+    *   Subsequent runs will just start the container (rebuilding only if necessary).
+3.  **Access the Application**:
+    *   Open your web browser and go to: [http://localhost:8080](http://localhost:8080)
+4.  **Stop the Application**:
+    *   Open a Command Prompt or PowerShell in the same directory.
+    *   Run the command: `stop.bat`
+    *   This will stop and remove the running Docker container.
 
 ## Temporary Files
 
