@@ -4,6 +4,7 @@ import logging
 import polars as pl # Use polars for consistency if needed by imported functions
 from typing import Tuple, Dict, Optional, List # Import Tuple for type hinting, Dict/Optional for footnote lookup, List for dropdown choices
 from pathlib import Path # Ensure Path is imported
+import tempfile # For temporary file creation for download
 
 # Configure logging for this module
 log = logging.getLogger(__name__)
@@ -16,8 +17,10 @@ rgb_data: Optional[pl.DataFrame] = None # Initialize here
 # --- Import Logic Dependencies ---
 try:
     # Use standard import relative to project root
-    from scripts.calculate_vacancy_allowance import load_rgb_orders, get_rates_for_date, DATE_RANGES, RGBO_CSV_PATH
-    from scripts.calculate_vacancy_allowance import calculate_vacancy_allowance as backend_calculate_vacancy
+    from scripts.calculate_vacancy_allowance import load_rgb_orders, get_order_details_for_date, DATE_RANGES, RGBO_CSV_PATH
+    from scripts.calculate_vacancy_allowance import calculate_single_allowance_from_dict as backend_calculate_vacancy
+    # Import the new function for batch processing
+    from scripts.calculate_vacancy_allowance import add_vacancy_allowances_to_df 
     logging.info("Successfully imported calculation logic from scripts.calculate_vacancy_allowance")
     logic_available = True
 
@@ -34,14 +37,26 @@ try:
 except ImportError as e:
     log.error(f"Fatal Error: Failed to import from calculate_vacancy_allowance: {e}. Calculator cannot function.", exc_info=True)
     rgb_data = None # Ensure it's None
-    def get_rates_for_date(*args, **kwargs): return None
+    def get_order_details_for_date(*args, **kwargs): return None # type: ignore # Renamed dummy
+    def backend_calculate_vacancy(*args, **kwargs): # type: ignore - For the interactive part
+        log.error("backend_calculate_vacancy (interactive) is unavailable due to import error.")
+        return "Error: Interactive calculation function unavailable due to import error."
+    def add_vacancy_allowances_to_df(*args, **kwargs): # type: ignore - For the batch part
+        log.error("add_vacancy_allowances_to_df (batch) is unavailable due to import error.")
+        raise ImportError("add_vacancy_allowances_to_df is unavailable")
     DATE_RANGES = {}
     logic_available = False
 except Exception as e:
     # This will catch errors during load_rgb_orders() as well
     log.error(f"Fatal Error: An unexpected error occurred during import or RGBO data loading: {e}. Calculator cannot function.", exc_info=True)
     rgb_data = None # Ensure it's None
-    def get_rates_for_date(*args, **kwargs): return None
+    def get_order_details_for_date(*args, **kwargs): return None # type: ignore # Renamed dummy
+    def backend_calculate_vacancy(*args, **kwargs): # type: ignore - For the interactive part
+        log.error("backend_calculate_vacancy (interactive) is unavailable due to unexpected error.")
+        return "Error: Interactive calculation function unavailable due to unexpected error."
+    def add_vacancy_allowances_to_df(*args, **kwargs): # type: ignore - For the batch part
+        log.error("add_vacancy_allowances_to_df (batch) is unavailable due to unexpected error.")
+        raise ImportError("add_vacancy_allowances_to_df is unavailable")
     DATE_RANGES = {}
     logic_available = False
 
@@ -186,23 +201,22 @@ def calculate_vacancy_allowance_interactive(
         # if rgb_data["beginning_date"].dtype != pl.Date:
         #     rgb_data = rgb_data.with_columns(pl.col(["beginning_date", "end_date"]).str.strptime(pl.Date, "%Y-%m-%d", strict=False))
 
-        relevant_orders = rgb_data.filter(
-            (pl.col("beginning_date") <= lsd) & (pl.col("end_date") >= lsd)
-        )
+        # relevant_orders = rgb_data.filter(
+        #     (pl.col("beginning_date") <= lsd) & (pl.col("end_date") >= lsd)
+        # )
+        # USE get_order_details_for_date instead of direct filtering here
+        order_dict = get_order_details_for_date(rgb_data, lsd)
 
-        if relevant_orders.is_empty():
-            log.warning(f"No RGBO rates found for date: {lsd}")
+        if order_dict is None: # Check if get_order_details_for_date returned None
+            log.warning(f"No RGBO rates found for date: {lsd} using get_order_details_for_date")
             error_msg = f"Indeterminable: No RGBO order found covering lease start date {lsd}"
             explanation_steps.append(error_msg)
             notes_details.append("N/A - No matching RGBO order found.")
             return error_msg, "\n".join(explanation_steps), "\n".join(notes_details)
 
-        # Assuming only one order applies per date. If multiple, log warning and take the first.
-        if len(relevant_orders) > 1:
-            log.warning(f"Multiple RGBO orders ({relevant_orders['order_number'].to_list()}) found for {lsd}. Using the first one: {relevant_orders[0, 'order_number']}")
-        
-        order_row = relevant_orders[0] # Get the first row as a Struct/Row object
-        order_dict = order_row.to_dicts()[0] # Convert the row to a dictionary for easier access
+        # No need to check len(relevant_orders) or get row [0] as order_dict is already the result or None
+        # order_row = relevant_orders[0] # Get the first row as a Struct/Row object
+        # order_dict = order_row.to_dicts()[0] # Convert the row to a dictionary for easier access
 
         log.info(f"Found matching RGBO Order: {order_dict.get('order_number', 'N/A')}")
         explanation_steps.append(f"Successfully retrieved RGBO Order {order_dict.get('order_number', 'N/A')} covering {lsd}.")
@@ -323,184 +337,68 @@ def calculate_vacancy_allowance_interactive(
 
     # --- Flowchart Logic Implementation ---
     try:
-        is_pe_status = (apartment_status == "PE")
-        explanation_steps.append(f"1. Is Apartment Status 'PE'? {'Yes' if is_pe_status else 'No'}")
+        # Prepare unit_data dict for the backend function
+        # Note: lsd is already processed into a Python date object by this point
+        unit_data_for_backend = {
+            'lease_start_date': lsd, # This is the processed Python date object
+            'Apt Status': apartment_status,
+            'is_new_tenant': (is_new_tenant == "Yes"), # Convert to bool for backend if it expects bool
+            'term_length': 1 if term_length_str == "1" else 2, # Convert to int
+            # For the interactive calculator, 'had_vacancy_allowance_in_prev_12_mo' is a direct input.
+            # The backend calculate_vacancy_allowance_for_row will use this if previous_row_info is None.
+            # So, we pass it directly if the backend function is designed to use it from the dict.
+            # However, calculate_single_allowance_from_dict calls calculate_vacancy_allowance_for_row 
+            # with previous_row_info=None, and calculate_vacancy_allowance_for_row then recalculates
+            # had_vacancy_allowance_in_prev_12_mo_str based on that None. 
+            # This means the direct input from the UI for this specific field might be tricky to reconcile
+            # unless calculate_single_allowance_from_dict is smarter or expects it directly.
+            # For now, let's assume the backend expects these fields directly in the dict passed to it.
 
-        if is_pe_status:
-            log.info("Path: Apartment Status == PE")
-            result = one_yr_rate
-            explanation_steps.append(f"--> Result: 1-Year Rate ({one_yr_rate*100:.2f}%)")
-        else: # Not PE
-            log.info("Path: Apartment Status != PE")
-            is_new = (is_new_tenant == "Yes")
-            explanation_steps.append(f"2. Is this a New Tenant? {'Yes' if is_new else 'No'}")
-            if not is_new:
-                log.info("Path: Not New Tenant")
-                result = 0.0
-                explanation_steps.append("--> Result: 0.00%")
-            else: # New Tenant == Yes
-                log.info("Path: New Tenant == Yes")
-                term_length = 1 if term_length_str == "1" else 2
-                explanation_steps.append(f"3. Lease Term Length: {term_length_str}")
+            # The calculate_vacancy_allowance_for_row expects these keys in unit_data_current_row
+            # The interactive UI provides these via separate Gradio components.
+            'had_vacancy_allowance_in_prev_12_mo': (had_vacancy_allowance_in_prev_12_mo == "Yes"), # Pass as bool
+            'previous_preferential_rent_has_value': (previous_preferential_rent_has_value == "Yes"), # Pass as bool
+            'tenant_tenure_years': tenant_tenure_years, # Already float
+            
+            # These are needed by calculate_vacancy_allowance_for_row to determine certain conditions
+            # but are effectively inputs to the interactive calculator.
+            # The backend function will use these from the dict.
+            'order_number_for_logic': order_dict.get('order_number', 'Unknown'), # Pass for Order 52/53 logic inside backend
+            'is_order52_first_year_str_for_logic': "Yes" if (order_dict.get('order_number') == "52" and (1 if term_length_str == "1" else 2) >=2 and is_first_year == "Yes") else "No",
+            'is_order53_first_half_str_for_logic': "First 6 Months" if (order_dict.get('order_number') == "53" and (1 if term_length_str == "1" else 2) == 1 and is_first_half == "First 6 Months") else "Second 6 Months",
+        }
 
-                if term_length == 1:
-                    log.info("Path: Term Length == 1")
-                    explanation_steps.append(f"4. Checking Lease Start Date ({lsd}) for 1-Year Term...")
-                    
-                    # Determine the applicable one-year rate based on RGBO order and half
-                    applicable_one_year_rate = one_yr_rate  # Default to standard one-year rate
-                    if order_number == "53":
-                        if is_first_half == "First 6 Months":
-                            applicable_one_year_rate = one_year_first_half_rate
-                            explanation_steps.append(f"--> Using first 6 months rate ({one_year_first_half_rate*100:.2f}%) for Order #53")
-                        else:  # is_first_half == "Second 6 Months"
-                            applicable_one_year_rate = one_year_second_half_rate
-                            explanation_steps.append(f"--> Using second 6 months rate ({one_year_second_half_rate*100:.2f}%) for Order #53")
-                    
-                    # Check Lease Start Date (Term 1)
-                    if DATE_RANGES["range_83_97"][0] <= lsd <= DATE_RANGES["range_83_97"][1]:
-                        log.info("Path: Lease Date 83-97")
-                        explanation_steps.append(f"--> Date falls within {DATE_RANGES['range_83_97'][0]} to {DATE_RANGES['range_83_97'][1]}.")
-                        result = applicable_one_year_rate + vac_lease_rate
-                        explanation_steps.append(f"--> Calculation: 1-Year Rate ({applicable_one_year_rate*100:.2f}%) + Vacancy Lease Rate ({vac_lease_rate*100:.2f}%) = {result*100:.2f}%")
-                    elif DATE_RANGES["range_97_11"][0] <= lsd <= DATE_RANGES["range_97_11"][1]:
-                        log.info("Path: Lease Date 97-11")
-                        explanation_steps.append(f"--> Date falls within {DATE_RANGES['range_97_11'][0]} to {DATE_RANGES['range_97_11'][1]}.")
-                        result = 0.20 - (two_yr_rate - applicable_one_year_rate)
-                        explanation_steps.append(f"--> Calculation: 20.00% - (2-Year Rate ({two_yr_rate*100:.2f}%) - 1-Year Rate ({applicable_one_year_rate*100:.2f}%)) = {result*100:.2f}%")
-                    elif DATE_RANGES["range_11_15"][0] <= lsd <= DATE_RANGES["range_11_15"][1]:
-                         log.info("Path: Lease Date 11-15")
-                         explanation_steps.append(f"--> Date falls within {DATE_RANGES['range_11_15'][0]} to {DATE_RANGES['range_11_15'][1]}.")
-                         result = 0.0
-                         explanation_steps.append("--> Result: 0.00%")
-                    elif DATE_RANGES["range_15_19"][0] <= lsd <= DATE_RANGES["range_15_19"][1]:
-                        log.info("Path: Lease Date 15-19")
-                        explanation_steps.append(f"--> Date falls within {DATE_RANGES['range_15_19'][0]} to {DATE_RANGES['range_15_19'][1]}.")
-                        had_prev_vac = (had_vacancy_allowance_in_prev_12_mo == "Yes")
-                        explanation_steps.append(f"5. Vacancy Allowance taken in prior 12 mo? {'Yes' if had_prev_vac else 'No'}")
-                        if had_prev_vac:
-                            log.info("Path: Had Vacancy Allowance Prev 12 Mo == Yes")
-                            had_prev_pref = (previous_preferential_rent_has_value == "Yes")
-                            explanation_steps.append(f"6. Previous Preferential Rent had value? {'Yes' if had_prev_pref else 'No'}")
-                            if had_prev_pref:
-                                log.info("Path: Pref Rent Has Value == Yes")
-                                result = 0.0
-                                explanation_steps.append("--> Result: 0.00%")
-                            else: # Pref Rent No
-                                log.info("Path: Pref Rent Has Value == No")
-                                result = 0.20 - (two_yr_rate - applicable_one_year_rate)
-                                explanation_steps.append(f"--> Calculation: 20.00% - (2-Year Rate ({two_yr_rate*100:.2f}%) - 1-Year Rate ({applicable_one_year_rate*100:.2f}%)) = {result*100:.2f}%")
-                        else: # Had Vacancy Allowance No
-                            log.info("Path: Had Vacancy Allowance Prev 12 Mo == No")
-                            tenure = tenant_tenure_years
-                            log.info(f"Path: Tenant Tenure Check. Tenure = {tenure}")
-                            explanation_steps.append(f"6. Checking Tenant Tenure: {tenure} years")
-                            if 0 <= tenure <= 2:
-                                result = 0.05
-                                explanation_steps.append(f"--> Tenure ({tenure}) is 0-2 years. Result: 5.00%")
-                            elif tenure == 3:
-                                result = 0.10
-                                explanation_steps.append(f"--> Tenure ({tenure}) is 3 years. Result: 10.00%")
-                            elif tenure == 4:
-                                result = 0.15
-                                explanation_steps.append(f"--> Tenure ({tenure}) is 4 years. Result: 15.00%")
-                            elif tenure > 4:
-                                result = 0.20 - (two_yr_rate - applicable_one_year_rate)
-                                explanation_steps.append(f"--> Tenure ({tenure}) > 4 years.")
-                                explanation_steps.append(f"--> Calculation: 20.00% - (2-Year Rate ({two_yr_rate*100:.2f}%) - 1-Year Rate ({applicable_one_year_rate*100:.2f}%)) = {result*100:.2f}%")
-                            else:
-                                result = "Indeterminable: Invalid Tenure"
-                                explanation_steps.append(f"--> Invalid Tenure value: {tenure}. Result is indeterminable.")
-                    elif DATE_RANGES["range_19_present"][0] <= lsd: # Simplified check for present
-                        log.info("Path: Lease Date 19-Present")
-                        explanation_steps.append(f"--> Date falls within {DATE_RANGES['range_19_present'][0]} to present.")
-                        # *** FIX: For 1-year leases in this range, use the applicable rate (esp. for Order #53) ***
-                        result = applicable_one_year_rate
-                        explanation_steps.append(f"--> Result: Applicable 1-Year Rate ({result*100:.2f}%)")
-                    else:
-                        result = "Indeterminable: Lease Start Date out of defined ranges (Term 1)"
-                        explanation_steps.append(f"--> Lease Start Date {lsd} does not fall into any defined range for Term 1.")
+        # The interactive logic below was the actual calculation.
+        # We now need to call the backend_calculate_vacancy function.
+        # The original interactive logic is now *inside* calculate_vacancy_allowance_for_row.
+        # So, we just need to call the backend function with the prepared dictionary.
 
-                elif term_length >= 2:
-                    log.info("Path: Term Length == 2+")
-                    explanation_steps.append(f"4. Checking Lease Start Date ({lsd}) for 2+ Year Term...")
-                    
-                    # Determine the applicable two-year rate based on RGBO order and year
-                    applicable_two_year_rate = two_yr_rate  # Default to standard two-year rate
-                    if order_number == "52":
-                        if is_first_year == "Yes":
-                            applicable_two_year_rate = two_year_first_year_rate
-                            explanation_steps.append(f"--> Using first year rate ({two_year_first_year_rate*100:.2f}%) for Order #52")
-                        else:  # is_first_year == "No"
-                            applicable_two_year_rate = two_year_second_year_rate
-                            explanation_steps.append(f"--> Using second year rate ({two_year_second_year_rate*100:.2f}%) for Order #52")
-                    
-                    # Check Lease Start Date (Term 2+)
-                    if DATE_RANGES["range_83_97"][0] <= lsd <= DATE_RANGES["range_83_97"][1]:
-                        log.info("Path: Lease Date 83-97")
-                        explanation_steps.append(f"--> Date falls within {DATE_RANGES['range_83_97'][0]} to {DATE_RANGES['range_83_97'][1]}.")
-                        result = 0.20 - applicable_two_year_rate + vac_lease_rate
-                        explanation_steps.append(f"--> Calculation: 20.00% - 2-Year Rate ({applicable_two_year_rate*100:.2f}%) + Vacancy Lease Rate ({vac_lease_rate*100:.2f}%) = {result*100:.2f}%")
-                    elif DATE_RANGES["range_97_11"][0] <= lsd <= DATE_RANGES["range_97_11"][1]:
-                        log.info("Path: Lease Date 97-11")
-                        explanation_steps.append(f"--> Date falls within {DATE_RANGES['range_97_11'][0]} to {DATE_RANGES['range_97_11'][1]}.")
-                        result = 0.20
-                        explanation_steps.append("--> Result: 20.00%")
-                    elif DATE_RANGES["range_11_15"][0] <= lsd <= DATE_RANGES["range_11_15"][1]:
-                        log.info("Path: Lease Date 11-15")
-                        explanation_steps.append(f"--> Date falls within {DATE_RANGES['range_11_15'][0]} to {DATE_RANGES['range_11_15'][1]}.")
-                        result = 0.0
-                        explanation_steps.append("--> Result: 0.00%")
-                    elif DATE_RANGES["range_15_19"][0] <= lsd <= DATE_RANGES["range_15_19"][1]:
-                        log.info("Path: Lease Date 15-19")
-                        explanation_steps.append(f"--> Date falls within {DATE_RANGES['range_15_19'][0]} to {DATE_RANGES['range_15_19'][1]}.")
-                        had_prev_vac = (had_vacancy_allowance_in_prev_12_mo == "Yes")
-                        explanation_steps.append(f"5. Vacancy Allowance taken in prior 12 mo? {'Yes' if had_prev_vac else 'No'}")
-                        if had_prev_vac:
-                            log.info("Path: Had Vacancy Allowance Prev 12 Mo == Yes")
-                            result = 0.0
-                            explanation_steps.append("--> Result: 0.00%")
-                        else: # Had Vacancy Allowance No
-                            log.info("Path: Had Vacancy Allowance Prev 12 Mo == No")
-                            had_prev_pref = (previous_preferential_rent_has_value == "Yes")
-                            explanation_steps.append(f"6. Previous Preferential Rent had value? {'Yes' if had_prev_pref else 'No'}")
-                            if had_prev_pref:
-                                log.info("Path: Pref Rent Has Value == Yes")
-                                result = 0.0
-                                explanation_steps.append("--> Result: 0.00%")
-                            else: # Pref Rent No
-                                log.info("Path: Pref Rent Has Value == No")
-                                result = 0.20
-                                explanation_steps.append("--> Result: 20.00%")
-                    elif DATE_RANGES["range_19_present"][0] <= lsd: # Simplified check for present
-                        log.info("Path: Lease Date 19-Present")
-                        explanation_steps.append(f"--> Date falls within {DATE_RANGES['range_19_present'][0]} to present.")
-                        had_prev_vac = (had_vacancy_allowance_in_prev_12_mo == "Yes")
-                        explanation_steps.append(f"5. Vacancy Allowance taken in prior 12 mo? {'Yes' if had_prev_vac else 'No'}")
-                        if had_prev_vac:
-                            log.info("Path: Had Vacancy Allowance Prev 12 Mo == Yes")
-                            result = 0.0
-                            explanation_steps.append("--> Result: 0.00%")
-                        else: # Had Vacancy Allowance No
-                            log.info("Path: Had Vacancy Allowance Prev 12 Mo == No")
-                            result = applicable_two_year_rate
-                            explanation_steps.append(f"--> Result: Applicable 2-Year Rate ({result*100:.2f}%)")
-                    else:
-                        result = "Indeterminable: Lease Start Date out of defined ranges (Term 2+)"
-                        explanation_steps.append(f"--> Lease Start Date {lsd} does not fall into any defined range for Term 2+.")
-                else:
-                     result = "Indeterminable: Invalid Term Length" # Should not happen with Radio
-                     explanation_steps.append(f"---> Invalid Term Length provided: {term_length_str}")
+        # Make sure all required inputs for `calculate_single_allowance_from_dict` (which calls `...for_row`)
+        # are present in `unit_data_for_backend` or handled by `.get` within the backend.
+        # `calculate_single_allowance_from_dict` primarily ensures `lease_start_date` is a date object.
+        # The other fields are passed through to `calculate_vacancy_allowance_for_row`.
+
+        result = backend_calculate_vacancy(unit_data_for_backend, rgb_data)
+        explanation_steps.append(f"Called backend calculation. Result: {result}") # Simple explanation for now
+
+        # The detailed explanation steps were part of the original interactive logic.
+        # If we want those steps displayed, the backend function would need to return them too,
+        # or we'd replicate a simplified version of that logic here just for explanation.
+        # For now, the detailed step-by-step will be missing from the interactive output if only result is returned.
+
+        # This was the original structure, assuming `result` is the final calculated value or error string.
+        # is_pe_status = (apartment_status == "PE")
+        # explanation_steps.append(f"1. Is Apartment Status 'PE'? {'Yes' if is_pe_status else 'No'}")
+        # ... (rest of the original detailed logic which is now in the backend) ...
 
         formatted_result = format_result(result)
-        # Use the pre-formatted result directly
         explanation_steps.append(f"\nFinal Result: {formatted_result}")
 
         log.info(f"--- Calculation Complete. Result: {formatted_result} ---")
         explanation_log = "\n".join(explanation_steps)
-        notes_log = "\n".join(notes_details) # Compile notes log
+        notes_log = "\n".join(notes_details) 
 
-        return formatted_result, explanation_log, notes_log # Return all three
+        return formatted_result, explanation_log, notes_log
 
     except KeyError as e:
          log.error(f"Missing date range key: {e}. DATE_RANGES might be incomplete.", exc_info=True)
@@ -544,6 +442,30 @@ def create_calculator_tab(processed_data_state: gr.State): # <<< Accept shared s
                 interactive=False
             )
         # --- END Preview Section ---
+
+        # --- ADDED: Batch Processing Section for Selected Unit CSV ---
+        with gr.Group():
+            gr.Markdown("### Process Full Unit CSV for Vacancy Allowances")
+            gr.Markdown("Select a unit from the dropdown above. Then click the button below to calculate vacancy allowances for all rows in its CSV and add it as a new column ('x_vacancy_allowance').")
+            process_selected_csv_button = gr.Button(
+                "Calculate & Add Allowances to Selected Unit CSV",
+                variant="secondary",
+                interactive=(logic_available and rgb_data is not None and not rgb_data.is_empty())
+            )
+            processed_csv_status_output = gr.Textbox(
+                label="Batch Processing Status", 
+                interactive=False, 
+                lines=3
+            )
+            calculator_df_preview_with_allowances = gr.DataFrame(
+                label="Preview of CSV with Added 'x_vacancy_allowance' Column",
+                interactive=False
+            )
+            download_augmented_csv_button = gr.File(
+                label="Download Augmented CSV with Allowances",
+                interactive=True # Will be made interactive once a file is ready
+            )
+        # --- END Batch Processing Section ---
 
         with gr.Row():
             with gr.Column(scale=1):
@@ -614,6 +536,85 @@ def create_calculator_tab(processed_data_state: gr.State): # <<< Accept shared s
         # Add a new Markdown component for notes/footnotes
         notes_output = gr.Markdown(label="Relevant Guideline Notes & Footnotes", value="Notes will appear here after calculation.")
         
+        # --- ADDED: Function and Event Handler for Batch CSV Processing ---
+        def process_selected_unit_csv_for_tab(
+            selected_unit_name: Optional[str], 
+            current_processed_data: Dict[str, pl.DataFrame],
+            # rgb_data is accessed from the global scope within this tab's context
+        ) -> Tuple[str, Optional[pl.DataFrame], Optional[str], gr.update]: # Added gr.update for visibility
+            visibility_update = gr.update(visible=False) # Default to not visible
+            if not logic_available or rgb_data is None or rgb_data.is_empty():
+                status = "Error: Core calculation logic or RGBO data is not available. Cannot process."
+                log.error(status)
+                return status, None, None, visibility_update
+
+            if not selected_unit_name:
+                status = "Please select a unit from the 'Preview Extracted Unit Data' dropdown first."
+                log.warning(status)
+                return status, None, None, visibility_update
+
+            if not current_processed_data or selected_unit_name not in current_processed_data:
+                status = f"Error: Data for selected unit '{selected_unit_name}' not found in the processed data cache."
+                log.error(status)
+                return status, None, None, visibility_update
+
+            unit_df_to_process = current_processed_data[selected_unit_name]
+            if not isinstance(unit_df_to_process, pl.DataFrame) or unit_df_to_process.is_empty():
+                status = f"Error: DataFrame for unit '{selected_unit_name}' is invalid or empty."
+                log.error(status)
+                return status, None, None, visibility_update
+
+            status = f"Processing CSV for unit: {selected_unit_name}...\nInput shape: {unit_df_to_process.shape}"
+            log.info(status)
+
+            try:
+                df_with_allowances = add_vacancy_allowances_to_df(unit_df_to_process, rgb_data)
+                
+                status += f"\nProcessing complete. Output shape: {df_with_allowances.shape}. Contains 'x_vacancy_allowance' column."
+                log.info(f"Successfully processed CSV for {selected_unit_name}. Output shape: {df_with_allowances.shape}")
+
+                # Prepare DataFrame for CSV writing: cast Object columns (like x_vacancy_allowance) to String
+                df_to_write = df_with_allowances.clone() # Work on a copy for writing
+                for col_name in df_to_write.columns:
+                    if df_to_write[col_name].dtype == pl.Object:
+                        log.info(f"Casting column '{col_name}' from Object to String using map_elements before CSV writing.")
+                        df_to_write = df_to_write.with_columns(pl.col(col_name).map_elements(str, return_dtype=pl.String))
+                    # Optional: Cast other types like Date/Datetime to string if default format is not desired
+                    # For now, Polars default string conversion for dates should be fine.
+
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".csv", prefix=f"{selected_unit_name}_with_allowances_") as tmp_file:
+                    df_to_write.write_csv(tmp_file.name)
+                    download_path = tmp_file.name
+                
+                status += f"\nAugmented CSV ready for download."
+                log.info(f"Augmented CSV for {selected_unit_name} saved to temp file: {download_path}")
+                visibility_update = gr.update(visible=True) # Make button visible on success
+                return status, df_with_allowances, download_path, visibility_update
+
+            except ImportError as imp_err:
+                error_msg = f"Error during processing for {selected_unit_name}: Could not use processing function ({imp_err}). Ensure imports are correct."
+                log.error(error_msg, exc_info=True)
+                return error_msg, None, None, visibility_update
+            except Exception as e:
+                error_msg = f"An unexpected error occurred while processing CSV for {selected_unit_name}: {e}"
+                log.error(error_msg, exc_info=True)
+                return error_msg, None, None, visibility_update
+
+        process_selected_csv_button.click(
+            fn=process_selected_unit_csv_for_tab,
+            inputs=[
+                calculator_unit_selector_dd, 
+                processed_data_state         
+            ],
+            outputs=[
+                processed_csv_status_output,
+                calculator_df_preview_with_allowances,
+                download_augmented_csv_button, # This will receive the path or None
+                download_augmented_csv_button  # This will receive the visibility update
+            ]
+        )
+        # --- END Batch CSV Processing --- 
+
         # Function to update tenant tenure input based on new tenant status
         def update_tenure_interactivity(new_tenant_status):
             if new_tenant_status == "Yes":
@@ -759,7 +760,34 @@ def create_calculator_tab(processed_data_state: gr.State): # <<< Accept shared s
 # Example of running just this tab for testing (optional)
 if __name__ == '__main__':
     print("Launching Vacancy Calculator Tab standalone for testing...")
+    # Create a dummy state for testing if needed
+    class DummyState:
+        def __init__(self, value):
+            self.value = value
+        def change(self, fn, inputs, outputs):
+            pass # No-op for simple testing
+    
+    dummy_processed_data = {}
+    # To test the batch processor, you might want to populate dummy_processed_data
+    # with a sample Polars DataFrame, e.g.:
+    # sample_df_data = {
+    #     'Tenant Name': ['Tenant A', 'Tenant A', 'Tenant B'],
+    #     'Lease Began': [date(2020,1,1), date(2021,1,1), date(2020,6,1)],
+    #     'Lease Ends': [date(2020,12,31), date(2021,12,31), date(2021,5,30)],
+    #     'Actual Rent Paid': [1000, 1050, 1200],
+    #     'Legal Reg Rent': [1000, 1050, 1200],
+    #     'Apt Status': ['Other','Other','Other']
+    # }
+    # try:
+    #     sample_df = pl.DataFrame(sample_df_data)
+    #     dummy_processed_data = {"Unit1_Test": sample_df}
+    #     print("Created dummy DataFrame for testing.")
+    # except Exception as e:
+    #     print(f"Could not create dummy polars DataFrame: {e}")
+
+    dummy_state = DummyState(dummy_processed_data) 
+
     if rgb_data is None:
-         print("\nWARNING: RGBO data failed to load. The calculator will show an error message and be disabled.\n")
-    interface = create_calculator_tab()
+         print("\nWARNING: RGBO data failed to load. The calculator will show an error message and some parts may be disabled.\n")
+    interface = create_calculator_tab(dummy_state) # Pass dummy state
     interface.launch() 

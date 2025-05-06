@@ -1,7 +1,7 @@
 import logging
 import re
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple, Union
+from typing import List, Dict, Optional, Tuple, Union, Any
 import polars as pl
 from datetime import date, datetime
 import os # Make sure os is imported if not already
@@ -24,7 +24,7 @@ except ImportError as e:
 # Import vacancy calculation logic
 try:
     # Relative import from the same directory now
-    from .calculate_vacancy_allowance import calculate_vacancy_allowance, load_rgb_orders
+    from .calculate_vacancy_allowance import load_rgb_orders as primary_load_rgb_orders, add_vacancy_allowances_to_df
 except ImportError as e:
     logging.error(f"Failed to import from .calculate_vacancy_allowance: {e}")
     def calculate_vacancy_allowance(*args, **kwargs):
@@ -53,7 +53,7 @@ try:
         raise FileNotFoundError(f"RGBO file not found at derived path: {RGBO_CSV_FULL_PATH}")
 
     # Pass the explicit full path to the loading function
-    RGBO_DATA = load_rgb_orders(csv_path=RGBO_CSV_FULL_PATH)
+    RGBO_DATA = primary_load_rgb_orders(csv_path=RGBO_CSV_FULL_PATH)
 
     if RGBO_DATA is None or RGBO_DATA.is_empty():
          logging.warning("Loaded RGBO data is empty or None after processing. Vacancy calculations may fail.")
