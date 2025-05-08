@@ -382,92 +382,114 @@ def export_unit_to_csv(apt_number: str, unit_data: List[DHCR_Entry], output_dir:
 # --- Main Execution ---
 
 def process_pdf(pdf_filepath: Union[str, Path], output_dir: Path, generate_images: bool = False):
-    """Main function to process a single PDF, outputting results to the specified directory."""
+    """Main function to process a single PDF, outputting results to the specified directory.
+    This function is a generator and yields status messages.
+    """
     pdf_path = Path(pdf_filepath)
     if not pdf_path.is_file():
         logging.error(f"PDF file not found: {pdf_path}")
+        yield f"Error: PDF file not found: {pdf_path}"
         return
 
-    logging.info(f"Processing PDF: {pdf_path}")
+    yield f"Processing PDF: {pdf_path}"
 
     # 1. Load PDF data
     try:
         logging.info("Reading PDF file into memory...")
         with open(pdf_path, "rb") as f:
             pdf_data = f.read()
-        logging.info(f"Loaded PDF data ({len(pdf_data)} bytes). Read complete.")
+        yield f"Loaded PDF data ({len(pdf_data)} bytes)."
     except IOError as e:
         logging.error(f"Failed to read PDF file {pdf_path}: {e}")
+        yield f"Error: Failed to read PDF file {pdf_path}: {e}"
         return
 
     # 2. Initialize Gemini Client
     try:
-        logging.info("Initializing Gemini client...")
+        yield "Initializing Gemini client..."
         client = get_gemini_client()
-        logging.info("Gemini client initialized.")
-    except Exception:
-        # Error already logged in get_gemini_client
+        yield "Gemini client initialized."
+    except Exception as e:
+        # Error already logged in get_gemini_client, but yield a message too
+        yield f"Error: Failed to initialize Gemini client: {e}"
         return
 
     # 3. Identify relevant pages
-    logging.info("Calling identify_dhcr_pages...")
-    valid_pages = identify_dhcr_pages(client, pdf_data)
-    logging.info(f"identify_dhcr_pages returned: {valid_pages}")
+    yield "Identifying DHCR pages..."
+    valid_pages = identify_dhcr_pages(client, pdf_data) # identify_dhcr_pages logs internally
     if not valid_pages:
-        logging.warning(f"No pages with valid DHCR data found in {pdf_path}. Exiting.")
-        return
+        yield f"No pages with valid DHCR data found in {pdf_path}."
+        # Still continue if generate_images is true, as images might be desired for all pages
+        if not generate_images:
+            return
+        else:
+            yield "Proceeding with image generation for all pages as no data pages were identified."
+    else:
+        yield f"Identified {len(valid_pages)} relevant DHCR data page(s): {valid_pages}"
 
     # 4. Extract data from each relevant page
     building_dhcr_db: List[DHCR_Entry] = []
-    for page_num in valid_pages:
-        page_data = extract_data_from_page(client, pdf_data, page_num)
-        if page_data and page_data.dhcr_entries:
-            building_dhcr_db.extend(page_data.dhcr_entries)
-            logging.info(f"Added {len(page_data.dhcr_entries)} entries from page {page_num} to the database.")
-        else:
-            logging.warning(f"Could not extract valid data from page {page_num}.")
-
-    if not building_dhcr_db:
-        logging.warning("No DHCR entries were successfully extracted from any identified page.")
-        return # Return early if no data extracted
-
-    logging.info(f"Total extracted DHCR entries across all pages: {len(building_dhcr_db)}")
-
-    # 5. Group data by Apartment Number
-    grouped_by_apt: Dict[str, List[DHCR_Entry]] = defaultdict(list)
-    for entry in building_dhcr_db:
-        # Ensure apt_number is valid before grouping
-        if entry.apt_number and isinstance(entry.apt_number, str):
-             # Apt number already normalized by Pydantic validator
-             grouped_by_apt[entry.apt_number].append(entry)
-        else:
-             logging.warning(f"Skipping entry with invalid or missing apt_number: {entry}")
+    if valid_pages: # Only extract if pages were found
+        for i, page_num in enumerate(valid_pages):
+            yield f"Extracting data from page {page_num} ({i+1}/{len(valid_pages)})..."
+            page_data = extract_data_from_page(client, pdf_data, page_num)
+            if page_data and page_data.dhcr_entries:
+                building_dhcr_db.extend(page_data.dhcr_entries)
+                yield f"Page {page_num}: Found {len(page_data.dhcr_entries)} entries."
+            else:
+                yield f"Page {page_num}: No valid data extracted or page was empty."
+    else:
+        yield "Skipping data extraction as no relevant pages were identified."
 
 
-    # 6. Export each unit's data to CSV, sorted by date
-    logging.info(f"Found {len(grouped_by_apt)} unique apartment units. Exporting to CSV in {output_dir}...")
-    for apt_number, unit_entries in grouped_by_apt.items():
-        export_unit_to_csv(apt_number, unit_entries, output_dir) # Pass output_dir here
+    if not building_dhcr_db and valid_pages: # valid_pages ensures we only warn if we expected data
+        yield "Warning: No DHCR entries were successfully extracted from any identified page."
+        # Do not return yet if images are to be generated
 
-    # 7. Generate images if requested
-    if generate_images:
-        image_output_dir = output_dir / f"{pdf_path.stem}_images"
-        logging.info(f"Image generation requested. Outputting images to: {image_output_dir}")
-        try:
-            # pdf_to_images needs the output dir created
-            image_output_dir.mkdir(parents=True, exist_ok=True)
-            # Ensure the function receives Path objects or strings as expected
-            pdf_to_images(str(pdf_path), str(image_output_dir))
-            logging.info(f"Successfully converted PDF pages to images in {image_output_dir}")
-        except ImportError as ie:
-             logging.error(f"Failed to convert PDF to images. pdf2image or its dependency (Poppler) might be missing: {ie}")
-             logging.error("Please ensure pdf2image is installed (`pip install pdf2image`) and Poppler is installed and in your system's PATH.")
-        except Exception as e:
-            logging.error(f"Failed to convert PDF to images: {e}")
-            # Continue even if image generation fails
+    if building_dhcr_db:
+        yield f"Total extracted DHCR entries: {len(building_dhcr_db)}. Grouping by apartment number..."
+        # 5. Group data by Apartment Number
+        grouped_by_apt: Dict[str, List[DHCR_Entry]] = defaultdict(list)
+        for entry in building_dhcr_db:
+            # Ensure apt_number is valid before grouping
+            if entry.apt_number and isinstance(entry.apt_number, str):
+                 # Apt number already normalized by Pydantic validator
+                 grouped_by_apt[entry.apt_number].append(entry)
+            else:
+                 logging.warning(f"Skipping entry with invalid or missing apt_number: {entry}")
 
 
-    logging.info(f"Processing finished for {pdf_path}. Output files are in {output_dir}")
+        # 6. Export each unit's data to CSV, sorted by date
+        if grouped_by_apt: # Only proceed if there's data to export
+            yield f"Found {len(grouped_by_apt)} unique apartment units. Exporting to CSVs in {output_dir}..."
+            for apt_number, unit_entries in grouped_by_apt.items():
+                export_unit_to_csv(apt_number, unit_entries, output_dir) # Pass output_dir here
+            yield "Finished exporting CSV data."
+        elif valid_pages: # Only message if we expected data pages
+            yield "No unit data to export to CSV."
+
+
+        # 7. Generate images if requested
+        if generate_images:
+            image_output_dir = output_dir / f"{pdf_path.stem}_images"
+            logging.info(f"Image generation requested. Outputting images to: {image_output_dir}")
+            try:
+                # pdf_to_images needs the output dir created
+                image_output_dir.mkdir(parents=True, exist_ok=True)
+                # Ensure the function receives Path objects or strings as expected
+                # pdf_to_images itself doesn't yield status, so we wrap it.
+                yield f"Generating images for {pdf_path.name} into {image_output_dir}..."
+                pdf_to_images(str(pdf_path), str(image_output_dir))
+                yield f"Successfully converted PDF pages to images in {image_output_dir}"
+            except ImportError as ie:
+                 logging.error(f"Failed to convert PDF to images. pdf2image or its dependency (Poppler) might be missing: {ie}")
+                 yield f"Error: Image generation failed. pdf2image or Poppler might be missing. See logs."
+            except Exception as e:
+                logging.error(f"Failed to convert PDF to images: {e}")
+                yield f"Error: Failed during image generation: {e}"
+                # Continue even if image generation fails
+
+    yield f"Processing finished for {pdf_path} in pipeline. Output files are in {output_dir}"
 
 
 if __name__ == "__main__":
@@ -495,4 +517,8 @@ if __name__ == "__main__":
         DEFAULT_OUTPUT_DIR.mkdir(exist_ok=True)
 
         # Pass the default output dir and image flag to process_pdf
-        process_pdf(pdf_path, DEFAULT_OUTPUT_DIR, generate_images=args.images)
+        # If run as a script, iterate through the generator to execute it
+        print(f"Processing {pdf_path} with output to {DEFAULT_OUTPUT_DIR}, images: {args.images}")
+        for status_update in process_pdf(pdf_path, DEFAULT_OUTPUT_DIR, generate_images=args.images):
+            print(status_update)
+        print("Script execution complete.")

@@ -5,7 +5,7 @@ from pathlib import Path
 import shutil
 import logging
 import os
-from typing import Optional, Tuple, Any, List, Dict, Union
+from typing import Optional, Tuple, Any, List, Dict, Union, Generator
 import polars as pl # Use polars for reading CSVs
 
 # Configure Logging
@@ -84,244 +84,341 @@ except Exception as e:
 # --- Gradio Processing Function (DHCR) ---
 
 # Update return signature: Add preview_cache_dir_state output AND processed_data_state output
-def process_dhcr_pdf(pdf_file_obj, generate_images: bool, calculate_vacancy: bool) -> Tuple[
+def process_dhcr_pdf(pdf_file_obj, generate_images: bool, calculate_vacancy: bool) -> Generator[Tuple[ # Now a generator
     Optional[str], str, Optional[str], # zip_output, status_output, zip_path_state
     Dict, Dict, Dict, Dict, # df_preview update, df_group update, unit_selector update, unit_data_map_state update
     Optional[str], # preview_cache_dir_state update
     Dict[str, pl.DataFrame] # processed_data_state update
-]: # Now returns 9 items
+], None, None]:
     """
     Main function called by Gradio interface for DHCR PDF Processing.
     Processes PDF, copies preview CSVs to a persistent cache, zips results,
     prepares data for the first unit's DataFrame, populates unit selector dropdown,
     stores a map of unit names to FULL CSV paths in the persistent cache,
     and loads all unit dataframes into a dictionary for the calculator tab.
+    Yields updates for the UI progressively.
     """
-    # Initialize return values
-    first_unit_df_data = gr.update(value=None)
-    df_group_update = gr.update(visible=False)
-    unit_selector_update = gr.update(choices=[], value=None, visible=False)
-    unit_data_map: Dict[str, Path] = {} # Map unit name to its FULL CSV path IN CACHE
-    processed_data_dict: Dict[str, pl.DataFrame] = {} # Map unit name to its DataFrame (for Tab 2)
-    final_zip_path: Optional[str] = None
-    persistent_zip_path_state: Optional[str] = None
-    preview_cache_dir: Optional[Path] = None # Path to the persistent preview dir
-    preview_cache_dir_state_update: Optional[str] = None
+    # Initialize internal state for the 9 output components
+    _zip_output_val: Optional[str] = None
+    _status_output_lines: List[str] = ["Initializing DHCR processing..."]
+    _zip_path_state_val: Optional[str] = None
+    _df_preview_update_val: Dict = gr.update(value=None)
+    _df_group_update_val: Dict = gr.update(visible=False)
+    _unit_selector_update_val: Dict = gr.update(choices=[], value=None, visible=False)
+    _unit_data_map_val: Dict[str, Path] = {}
+    _preview_cache_dir_state_val: Optional[str] = None
+    _processed_data_dict_val: Dict[str, pl.DataFrame] = {}
+
+    def get_current_outputs_tuple() -> Tuple[Optional[str], str, Optional[str], Dict, Dict, Dict, Dict, Optional[str], Dict[str, pl.DataFrame]]:
+        return (
+            _zip_output_val, 
+            "\n".join(_status_output_lines), 
+            _zip_path_state_val,
+            _df_preview_update_val, 
+            _df_group_update_val, 
+            _unit_selector_update_val, 
+            _unit_data_map_val, 
+            _preview_cache_dir_state_val, 
+            _processed_data_dict_val
+        )
+
+    yield get_current_outputs_tuple() # Initial yield
 
     if pdf_file_obj is None:
-        return (None, "Error: No PDF file provided.", None,
-                first_unit_df_data, df_group_update, unit_selector_update, unit_data_map,
-                preview_cache_dir_state_update, processed_data_dict)
+        _status_output_lines.append("Error: No PDF file provided.")
+        # Ensure all other outputs are in a defined state if returning early
+        _zip_output_val = None
+        _zip_path_state_val = None
+        _df_preview_update_val = gr.update(value=None)
+        _df_group_update_val = gr.update(visible=False)
+        _unit_selector_update_val = gr.update(choices=[], value=None, visible=False)
+        _unit_data_map_val = {}
+        _preview_cache_dir_state_val = None
+        _processed_data_dict_val = {}
+        yield get_current_outputs_tuple()
+        return
 
     uploaded_pdf_path = Path(pdf_file_obj.name)
-    logging.info(f"[DHCR] Received file: {uploaded_pdf_path.name}, Generate Images: {generate_images}, Calculate Vacancy: {calculate_vacancy}")
+    _status_output_lines.append(f"[DHCR] Received file: {uploaded_pdf_path.name}, Generate Images: {generate_images}, Calculate Vacancy: {calculate_vacancy}")
+    yield get_current_outputs_tuple()
 
     # --- Create Persistent Preview Cache Directory FIRST ---
+    preview_cache_dir: Optional[Path] = None # Define preview_cache_dir here for broader scope
     try:
-        # Using a more descriptive prefix
         preview_cache_dir = Path(tempfile.mkdtemp(prefix="gradio_dhcr_preview_"))
-        preview_cache_dir_state_update = str(preview_cache_dir) # Store path for state return
-        logging.info(f"[DHCR] Created persistent preview cache directory: {preview_cache_dir}")
+        _preview_cache_dir_state_val = str(preview_cache_dir)
+        _status_output_lines.append(f"[DHCR] Created persistent preview cache directory: {preview_cache_dir}")
+        yield get_current_outputs_tuple()
     except Exception as e:
         logging.error(f"[DHCR] Failed to create persistent preview cache directory: {e}", exc_info=True)
-        status_message = f"Fatal Error: Could not create preview cache directory: {e}"
-        # Return error state (9 items)
-        return (None, status_message, None,
-                gr.update(value=None), gr.update(visible=False),
-                gr.update(choices=[], value=None, visible=False), {}, None, {})
+        _status_output_lines.append(f"Fatal Error: Could not create preview cache directory: {e}")
+        _preview_cache_dir_state_val = None # Ensure it's reset
+        # Reset other relevant states for a clean error return
+        _zip_output_val = None
+        _zip_path_state_val = None
+        _df_preview_update_val = gr.update(value=None)
+        _df_group_update_val = gr.update(visible=False)
+        _unit_selector_update_val = gr.update(choices=[], value=None, visible=False)
+        _unit_data_map_val = {}
+        _processed_data_dict_val = {}
+        yield get_current_outputs_tuple()
+        return
+
+    # This variable will hold the final successfully processed data from the handler
+    handler_pipeline_results: Optional[List[Dict[str, Any]]] = None
+    handler_run_output_dir_relative_path: Optional[Path] = None
+    processing_error_occurred = False
 
     try:
         # --- Process PDF in its own temporary directory ---
         with tempfile.TemporaryDirectory(prefix="dhcr_proc_") as temp_dir_str:
             temp_dir = Path(temp_dir_str)
             temp_input_pdf = temp_dir / uploaded_pdf_path.name
-            # This is where run_pdf_processing will create output/<pdf_stem>
-            temp_output_base = temp_dir / "output"
-            temp_output_base.mkdir()
+            temp_output_base = temp_dir / "output" # This is where run_pdf_processing will create output/<pdf_stem>
+            temp_output_base.mkdir(exist_ok=True) # Ensure it exists
             shutil.copy(uploaded_pdf_path, temp_input_pdf)
-            logging.info(f"[DHCR] Copied uploaded PDF to temporary input: {temp_input_pdf}")
+            _status_output_lines.append(f"[DHCR] Copied uploaded PDF to temporary input: {temp_input_pdf}")
+            yield get_current_outputs_tuple()
 
-            status_message = f"[DHCR] Processing {temp_input_pdf.name}...\n"
-            status_message += f"Generate Images: {generate_images}, Calculate Vacancy: {calculate_vacancy}\n"
+            _status_output_lines.append(f"[DHCR] Starting core processing for {temp_input_pdf.name}...")
+            _status_output_lines.append(f"   Generate Images: {generate_images}, Calculate Vacancy: {calculate_vacancy}")
+            yield get_current_outputs_tuple()
 
-            pipeline_results: List[Dict[str, Any]] = []
-            run_output_dir_relative_path: Optional[Path] = None # Relative to temp_output_base
-            processing_error: Optional[str] = None
+            # Call the generator from pdf_handler.py
+            pdf_handler_generator = run_pdf_processing(
+                temp_input_pdf,
+                temp_output_base, # This is base_output_dir for run_pdf_processing
+                generate_images=generate_images,
+                calculate_vacancy=calculate_vacancy
+            )
 
-            try:
-                # Call the DHCR-specific handler
-                pipeline_results, run_output_dir_relative_path = run_pdf_processing(
-                    temp_input_pdf,
-                    temp_output_base,
-                    generate_images=generate_images,
-                    calculate_vacancy=calculate_vacancy
-                )
-
-                if run_output_dir_relative_path is None:
-                    processing_error = "[DHCR] Processing script failed to return an output directory name."
-                elif not pipeline_results and not list((temp_output_base / run_output_dir_relative_path).glob('*')):
-                     processing_error = f"[DHCR] Processing finished, but no units were extracted and no output files were found in '{run_output_dir_relative_path}'. Check PDF content and API key/quota."
-                elif not pipeline_results:
-                     status_message += f"[DHCR] Processing finished for {temp_input_pdf.name}, but no specific unit data was extracted. Output files might still be generated.\n"
+            # Iterate through status updates and final result from the handler
+            for item in pdf_handler_generator:
+                if isinstance(item, str):
+                    _status_output_lines.append(item) # Append status message
+                    yield get_current_outputs_tuple()
+                elif isinstance(item, tuple) and len(item) == 2:
+                    if item[0] == "SUCCESS":
+                        handler_pipeline_results, handler_run_output_dir_relative_path = item[1]
+                        _status_output_lines.append("[DHCR] Handler finished successfully.")
+                        # Don't yield here, let the main logic after loop continue
+                        break # Exit loop once SUCCESS is received
+                    elif item[0] == "ERROR":
+                        error_msg_from_handler = item[1]
+                        _status_output_lines.append(f"[DHCR] Error from handler: {error_msg_from_handler}")
+                        logging.error(f"[DHCR] Handler reported error: {error_msg_from_handler}")
+                        processing_error_occurred = True
+                        # Potentially update UI and return early
+                        yield get_current_outputs_tuple()
+                        # No return here yet, let outer try-finally handle cleanup if preview_cache_dir exists
+                        break # Exit loop on ERROR
                 else:
-                    # --- Copy CSVs to Persistent Cache, Populate Map, Load First DF ---
-                    status_message += "\n[DHCR] Copying results to preview cache...\n"
-                    unit_names = []
-                    first_unit_name = None
-                    run_output_dir_full_path_source = temp_output_base # Base for resolving source paths
-
-                    for i, unit_result in enumerate(pipeline_results):
-                        # DHCR handler returns 'unit_name' and 'csv_path' (relative)
-                        unit_name = unit_result.get('unit_name', f'Unit_{i+1}')
-                        relative_csv_path = unit_result.get('csv_path') # This is Path('pdf_stem/apt_XYZ.csv')
-
-                        if relative_csv_path and isinstance(relative_csv_path, Path):
-                            original_full_csv_path = (run_output_dir_full_path_source / relative_csv_path).resolve()
-                            # Use only the filename for the destination path within the cache dir
-                            copied_csv_path = (preview_cache_dir / relative_csv_path.name).resolve()
-
-                            if original_full_csv_path.exists():
-                                try:
-                                    shutil.copy(original_full_csv_path, copied_csv_path)
-                                    # Store the path to the COPIED file in the map
-                                    unit_data_map[unit_name] = copied_csv_path
-                                    unit_names.append(unit_name)
-                                    logging.debug(f"[DHCR] Copied preview for '{unit_name}' to: {copied_csv_path}")
-                                    if first_unit_name is None:
-                                        first_unit_name = unit_name
-                                except Exception as copy_err:
-                                    logging.error(f"[DHCR] Failed to copy preview CSV for '{unit_name}' from {original_full_csv_path} to {copied_csv_path}: {copy_err}", exc_info=True)
-                                    status_message += f"- Warning: Failed to copy preview for {unit_name}.\n"
-                            else:
-                                 logging.warning(f"[DHCR] Source CSV not found for unit '{unit_name}' at {original_full_csv_path}, cannot copy to cache.")
-                                 status_message += f"- Warning: Source CSV not found for {unit_name}, cannot cache preview.\n"
-                        else:
-                            status_message += f"- Warning: No valid CSV path found for DHCR result {i}. Cannot add to dropdown or cache.\n"
-
-                    # --- Load Initial Preview (from cache) ---
-                    if first_unit_name and first_unit_name in unit_data_map:
-                         status_message += f"[DHCR] Attempting to load initial preview for: {first_unit_name} (from cache)\n"
-                         first_copied_csv_path = unit_data_map[first_unit_name]
-                         logging.info(f"[DHCR] Reading initial cached CSV from: {first_copied_csv_path}")
-                         preview_label = f"Preview: {first_unit_name} ({first_copied_csv_path.name})"
-                         try:
-                            if first_copied_csv_path.exists() and first_copied_csv_path.stat().st_size > 0:
-                                df_preview_data = pl.read_csv(first_copied_csv_path, try_parse_dates=True)
-                                first_unit_df_data = gr.update(value=df_preview_data, label=preview_label)
-                                df_group_update = gr.update(visible=True) # Show group
-                                unit_selector_update = gr.update(choices=sorted(unit_names), value=first_unit_name, visible=True) # Show dropdown, sorted
-                                status_message += f"- Successfully loaded initial preview for {first_unit_name}.\n"
-                            else:
-                                status_message += f"- Initial preview failed: Cached CSV for {first_unit_name} not found or empty at {first_copied_csv_path}.\n"
-                         except Exception as preview_err:
-                             logging.error(f"[DHCR] Error generating initial DataFrame preview from {first_copied_csv_path}: {preview_err}", exc_info=True)
-                             status_message += f"- Error reading initial cached CSV for {first_unit_name}: {preview_err}\n"
-                    elif unit_names:
-                         status_message += "- Units found, but couldn't load initial preview (copy or read error?). Check logs.\n"
-                         unit_selector_update = gr.update(choices=sorted(unit_names), value=None, visible=True) # Show dropdown anyway
-                    else:
-                        status_message += "- No units with CSV data found or cached to display.\n"
-                        unit_selector_update = gr.update(choices=[], value=None, visible=False)
-
-                    # --- Load ALL Unit DataFrames into processed_data_dict (for Tab 2) ---
-                    status_message += "\n[DHCR] Loading all unit data for calculator tab preview...\n"
-                    for unit_name_load, cached_csv_path_load in unit_data_map.items():
-                        try:
-                            if cached_csv_path_load.exists() and cached_csv_path_load.stat().st_size > 0:
-                                df = pl.read_csv(cached_csv_path_load, try_parse_dates=True)
-                                processed_data_dict[unit_name_load] = df
-                                logging.info(f"[DHCR] Loaded DataFrame for '{unit_name_load}' into shared state.")
-                                status_message += f"- Loaded data for {unit_name_load}.\n"
-                            else:
-                                 logging.warning(f"[DHCR] Skipping DF load for calc tab preview for '{unit_name_load}': CSV not found/empty at {cached_csv_path_load}")
-                                 status_message += f"- Warning: Could not load data for {unit_name_load} (file missing or empty).\n"
-                        except Exception as load_err:
-                            logging.error(f"[DHCR] Failed to load DF for calc tab preview for '{unit_name_load}' from {cached_csv_path_load}: {load_err}")
-                            status_message += f"- Error: Failed to load data for {unit_name_load}.\n"
-                    status_message += "[DHCR] Finished loading data for calculator tab.\n"
-                    # --- End Load ALL ---
-
-            except RuntimeError as rt_err:
-                 # Catch runtime errors specifically from the handler itself (e.g., import issues)
-                 logging.error(f"[DHCR] Runtime Error during processing logic: {rt_err}", exc_info=True)
-                 processing_error = f"A critical error occurred in the DHCR processing module: {rt_err}"
-            except Exception as e:
-                logging.error(f"[DHCR] Error during PDF processing logic: {e}", exc_info=True)
-                processing_error = f"An unexpected error occurred during DHCR processing: {e}"
-
-            # --- Handle processing outcome ---
-            if processing_error:
-                status_message += f"Error: {processing_error}\n"
-                logging.error(status_message)
-                # Return error state (9 items)
-                return (None, status_message, None,
-                        gr.update(value=None), gr.update(visible=False),
-                        gr.update(choices=[], value=None, visible=False), {}, preview_cache_dir_state_update, {})
-
-            # --- Zip the results (from original temp location) ---
-            if run_output_dir_relative_path:
-                run_output_dir_full_path_source = temp_output_base / run_output_dir_relative_path
-                if not run_output_dir_full_path_source.is_dir() or not any(run_output_dir_full_path_source.iterdir()):
-                    status_message += f"Warning: Original output directory '{run_output_dir_full_path_source}' not found or empty. Cannot create zip.\n"
-                    final_zip_path = None
-                    persistent_zip_path_state = None
-                else:
-                    zip_filename = f"{run_output_dir_relative_path.stem}_DHCR_output.zip"
-                    zip_filepath = temp_dir / zip_filename # Zip inside the inner temp dir
+                    _status_output_lines.append(f"[DHCR] Unexpected item from handler: {item}")
+                    yield get_current_outputs_tuple()
+            
+            # Check if handler finished with an error or without success data
+            if processing_error_occurred or handler_pipeline_results is None:
+                if not processing_error_occurred: # If no specific error, but no success data
+                    _status_output_lines.append("[DHCR] Handler finished, but no success data was returned. Check logs.")
+                    logging.error("[DHCR] Handler finished without success data.")
+                # Update UI and prepare for return
+                # Values are already in _status_output_lines
+                _zip_output_val = None
+                _zip_path_state_val = None
+                _df_preview_update_val = gr.update(value=None)
+                _df_group_update_val = gr.update(visible=False)
+                _unit_selector_update_val = gr.update(choices=[], value=None, visible=False)
+                _unit_data_map_val = {}
+                # _preview_cache_dir_state_val is already set or None
+                _processed_data_dict_val = {}
+                yield get_current_outputs_tuple()
+                # No explicit return here, will be caught by outer try/except for cleanup if preview_cache_dir exists
+                # The function will naturally end after this block if an error occurred here.
+                # However, to ensure cleanup of preview_cache_dir, we should raise an error that the outer block catches
+                # or handle cleanup explicitly before returning from this error path.
+                # For now, let the outer `except Exception as e` catch any fallout if needed, 
+                # or the function ends and `finally` in `gradio_app` (if any) runs.
+                # Let's ensure we return to stop the generator if a handler error occurs.
+                if preview_cache_dir and preview_cache_dir.exists(): # Manually clean if error from handler
                     try:
-                        logging.info(f"[DHCR] Creating zip file: {zip_filepath} from directory {run_output_dir_full_path_source}")
-                        with zipfile.ZipFile(zip_filepath, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                            for item in run_output_dir_full_path_source.rglob('*'):
-                                if item.is_file():
-                                    arcname = item.relative_to(run_output_dir_full_path_source)
-                                    zipf.write(item, arcname=arcname)
+                        shutil.rmtree(preview_cache_dir)
+                        _status_output_lines.append(f"[DHCR] Cleaned up preview cache dir {preview_cache_dir} due to handler error.")
+                        logging.info(f"[DHCR] Cleaned up preview cache dir {preview_cache_dir} due to handler error.")
+                        _preview_cache_dir_state_val = None
+                        yield get_current_outputs_tuple()
+                    except Exception as cleanup_err:
+                        _status_output_lines.append(f"[DHCR] Failed to cleanup preview cache {preview_cache_dir}: {cleanup_err}")
+                        logging.error(f"[DHCR] Failed to cleanup preview cache {preview_cache_dir}: {cleanup_err}")
+                        yield get_current_outputs_tuple()
+                return # Stop generator execution here
 
-                        status_message += f"Successfully created zip file: {zip_filename}\n"
-                        logging.info(status_message)
+            # --- If handler was successful, proceed with Gradio UI updates and zipping --- 
+            _status_output_lines.append("\n[DHCR] Copying results to preview cache...")
+            yield get_current_outputs_tuple()
+            
+            unit_names_for_dd = []
+            first_unit_name_for_dd = None
+            # run_output_dir_full_path_source is temp_output_base because handler_run_output_dir_relative_path is relative to it
+            # The csv_path from handler_pipeline_results is also relative to temp_output_base / handler_run_output_dir_relative_path
 
-                        # Copy zip to a persistent location
-                        persistent_final_zip_path = Path(tempfile.gettempdir()) / zip_filename
-                        try:
-                            shutil.copy(zip_filepath, persistent_final_zip_path)
-                            logging.info(f"[DHCR] Copied final zip to persistent temp path: {persistent_final_zip_path}")
-                            final_zip_path = str(persistent_final_zip_path)
-                            persistent_zip_path_state = str(persistent_final_zip_path)
-                        except Exception as copy_final_err:
-                             logging.error(f"[DHCR] Error copying final zip from {zip_filepath} to {persistent_final_zip_path}: {copy_final_err}", exc_info=True)
-                             status_message += f"Error: Failed to copy final zip file: {copy_final_err}\n"
-                             final_zip_path = None
-                             persistent_zip_path_state = None
-                    except Exception as e:
-                        logging.error(f"[DHCR] Error creating zip file {zip_filepath}: {e}", exc_info=True)
-                        status_message += f"Error: Failed to create zip file: {e}\n"
-                        final_zip_path = None
-                        persistent_zip_path_state = None
+            if handler_pipeline_results is not None: # Ensure it's not None
+                for i, unit_result in enumerate(handler_pipeline_results):
+                    unit_name = unit_result.get('unit_name', f'Unit_{i+1}')
+                    # csv_path from handler is relative to base_output_dir (temp_output_base in this func)
+                    # e.g., Path('pdf_stem/apt_XYZ.csv')
+                    relative_csv_path_from_handler = unit_result.get('csv_path') 
+
+                    if relative_csv_path_from_handler and isinstance(relative_csv_path_from_handler, Path):
+                        # source_csv_in_temp_run_dir is temp_output_base / relative_csv_path_from_handler
+                        source_csv_in_temp_run_dir = (temp_output_base / relative_csv_path_from_handler).resolve()
+                        # Destination in the persistent preview_cache_dir (using only filename for simplicity in cache)
+                        # preview_cache_dir is already a Path object
+                        copied_csv_path_in_persistent_cache = (preview_cache_dir / source_csv_in_temp_run_dir.name).resolve()
+
+                        if source_csv_in_temp_run_dir.exists():
+                            try:
+                                shutil.copy(source_csv_in_temp_run_dir, copied_csv_path_in_persistent_cache)
+                                _unit_data_map_val[unit_name] = copied_csv_path_in_persistent_cache # Map to COPIED path
+                                unit_names_for_dd.append(unit_name)
+                                logging.debug(f"[DHCR] Copied preview for '{unit_name}' to: {copied_csv_path_in_persistent_cache}")
+                                if first_unit_name_for_dd is None:
+                                    first_unit_name_for_dd = unit_name
+                            except Exception as copy_err:
+                                msg = f"- Warning: Failed to copy preview for {unit_name} to cache: {copy_err}."
+                                _status_output_lines.append(msg)
+                                logging.error(f"[DHCR] {msg}", exc_info=True)
+                                yield get_current_outputs_tuple()
+                        else:
+                            msg = f"- Warning: Source CSV from handler not found for {unit_name} at {source_csv_in_temp_run_dir}, cannot cache."
+                            _status_output_lines.append(msg)
+                            logging.warning(f"[DHCR] {msg}")
+                            yield get_current_outputs_tuple()
+                    else:
+                        msg = f"- Warning: No valid CSV path from handler for result {i}. Cannot cache."
+                        _status_output_lines.append(msg)
+                        logging.warning(f"[DHCR] {msg}")
+                        yield get_current_outputs_tuple()
+
+            # --- Load Initial Preview (from persistent cache) ---
+            if first_unit_name_for_dd and first_unit_name_for_dd in _unit_data_map_val:
+                _status_output_lines.append(f"[DHCR] Loading initial preview for: {first_unit_name_for_dd} from cache...")
+                yield get_current_outputs_tuple()
+                first_cached_csv_path = _unit_data_map_val[first_unit_name_for_dd]
+                preview_label = f"Preview: {first_unit_name_for_dd} ({first_cached_csv_path.name})"
+                try:
+                    if first_cached_csv_path.exists() and first_cached_csv_path.stat().st_size > 0:
+                        df_preview_data = pl.read_csv(first_cached_csv_path, try_parse_dates=True)
+                        _df_preview_update_val = gr.update(value=df_preview_data, label=preview_label)
+                        _df_group_update_val = gr.update(visible=True)
+                        _unit_selector_update_val = gr.update(choices=sorted(unit_names_for_dd), value=first_unit_name_for_dd, visible=True)
+                        _status_output_lines.append(f"- Successfully loaded initial preview for {first_unit_name_for_dd}.")
+                    else:
+                        _status_output_lines.append(f"- Initial preview failed: Cached CSV for {first_unit_name_for_dd} not found/empty.")
+                except Exception as preview_err:
+                    _status_output_lines.append(f"- Error reading initial cached CSV for {first_unit_name_for_dd}: {preview_err}")
+                    logging.error(f"[DHCR] Error initial preview from {first_cached_csv_path}: {preview_err}", exc_info=True)
+                yield get_current_outputs_tuple()
+            elif unit_names_for_dd: # Units found, but couldn't load initial preview
+                _status_output_lines.append("- Units found, but couldn't load initial preview. Check logs.")
+                _unit_selector_update_val = gr.update(choices=sorted(unit_names_for_dd), value=None, visible=True)
+                yield get_current_outputs_tuple()
             else:
-                 status_message += "[DHCR] Skipping zip creation as processing might have failed early.\n"
-                 final_zip_path = None
-                 persistent_zip_path_state = None
+                _status_output_lines.append("- No units with CSV data found or cached to display.")
+                _unit_selector_update_val = gr.update(choices=[], value=None, visible=False)
+                yield get_current_outputs_tuple()
 
-        # --- Inner temp directory is now cleaned up by the 'with' block ---
+            # --- Load ALL Unit DataFrames into _processed_data_dict_val (for Tab 2) ---
+            _status_output_lines.append("\n[DHCR] Loading all unit data for calculator tab preview...")
+            yield get_current_outputs_tuple()
+            for unit_name_load, cached_csv_path_load in _unit_data_map_val.items():
+                try:
+                    if cached_csv_path_load.exists() and cached_csv_path_load.stat().st_size > 0:
+                        df = pl.read_csv(cached_csv_path_load, try_parse_dates=True)
+                        _processed_data_dict_val[unit_name_load] = df
+                        logging.info(f"[DHCR] Loaded DataFrame for '{unit_name_load}' into shared state.")
+                        _status_output_lines.append(f"- Loaded data for {unit_name_load}.")
+                    else:
+                        _status_output_lines.append(f"- Warning: Could not load data for {unit_name_load} (file missing/empty).")
+                        logging.warning(f"[DHCR] Skipping DF load for calc for '{unit_name_load}': CSV not found/empty at {cached_csv_path_load}")
+                except Exception as load_err:
+                    _status_output_lines.append(f"- Error: Failed to load data for {unit_name_load}: {load_err}.")
+                    logging.error(f"[DHCR] Failed to load DF for calc for '{unit_name_load}': {load_err}")
+                yield get_current_outputs_tuple() # Update after each load attempt
+            _status_output_lines.append("[DHCR] Finished loading data for calculator tab.")
+            yield get_current_outputs_tuple()
 
-        # --- Prepare final return tuple (9 items) ---
-        return (final_zip_path, status_message, persistent_zip_path_state,
-                first_unit_df_data, df_group_update, unit_selector_update, unit_data_map,
-                preview_cache_dir_state_update, processed_data_dict)
+            # --- Zip the results (from original temp location: temp_output_base / handler_run_output_dir_relative_path) ---
+            if handler_run_output_dir_relative_path:
+                # This is the directory like temp_dir/output/pdf_stem created by the handler
+                source_dir_to_zip = temp_output_base / handler_run_output_dir_relative_path
+                if not source_dir_to_zip.is_dir() or not any(source_dir_to_zip.iterdir()):
+                    _status_output_lines.append(f"Warning: Original output directory '{source_dir_to_zip}' not found or empty. Cannot create zip.")
+                    _zip_output_val = None
+                    _zip_path_state_val = None
+                else:
+                    zip_filename = f"{handler_run_output_dir_relative_path.stem}_DHCR_output.zip"
+                    # Create zip inside the *inner* temp_dir (dhcr_proc_)
+                    zip_filepath_in_inner_temp = temp_dir / zip_filename 
+                    try:
+                        _status_output_lines.append(f"[DHCR] Creating zip file: {zip_filename} from {source_dir_to_zip}")
+                        yield get_current_outputs_tuple()
+                        with zipfile.ZipFile(zip_filepath_in_inner_temp, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                            for item in source_dir_to_zip.rglob('*'):
+                                if item.is_file():
+                                    arcname = item.relative_to(source_dir_to_zip)
+                                    zipf.write(item, arcname=arcname)
+                        _status_output_lines.append(f"- Successfully created zip file: {zip_filename}")
+                        
+                        # Copy zip to a persistent temp location for download
+                        persistent_final_zip_path = Path(tempfile.gettempdir()) / zip_filename
+                        shutil.copy(zip_filepath_in_inner_temp, persistent_final_zip_path)
+                        _status_output_lines.append(f"- Copied final zip to persistent temp path: {persistent_final_zip_path}")
+                        _zip_output_val = str(persistent_final_zip_path)
+                        _zip_path_state_val = str(persistent_final_zip_path)
+
+                    except Exception as e_zip:
+                        _status_output_lines.append(f"Error: Failed to create or copy zip file: {e_zip}")
+                        logging.error(f"[DHCR] Error creating/copying zip file {zip_filename}: {e_zip}", exc_info=True)
+                        _zip_output_val = None
+                        _zip_path_state_val = None
+                yield get_current_outputs_tuple()
+            else:
+                 _status_output_lines.append("[DHCR] Skipping zip creation as output directory from handler was not provided.")
+                 _zip_output_val = None
+                 _zip_path_state_val = None
+                 yield get_current_outputs_tuple()
+
+        # --- Inner temp directory (temp_dir_str) is now cleaned up by the 'with' block ---
+        _status_output_lines.append("[DHCR] Processing complete.")
+        yield get_current_outputs_tuple() # Final successful yield
+        return # End of successful generator execution
 
     except Exception as e:
-        # Catches errors outside the inner 'with' block
+        # Catches errors from setup before with block, or from the with block itself if not handled internally
         logging.error(f"[DHCR] Error during outer processing or setup/cleanup: {e}", exc_info=True)
-        status_message = f"Error during DHCR processing: {e}"
+        _status_output_lines.append(f"Error during DHCR processing: {e}")
+        # Cleanup preview_cache_dir if it was created
         if preview_cache_dir and preview_cache_dir.exists():
              try:
                  shutil.rmtree(preview_cache_dir)
+                 _status_output_lines.append(f"[DHCR] Cleaned up preview cache directory {preview_cache_dir} due to outer error.")
                  logging.info(f"[DHCR] Cleaned up preview cache directory {preview_cache_dir} due to outer error.")
+                 _preview_cache_dir_state_val = None
              except Exception as cleanup_err:
+                 _status_output_lines.append(f"[DHCR] Failed to cleanup preview cache directory {preview_cache_dir} after error: {cleanup_err}")
                  logging.error(f"[DHCR] Failed to cleanup preview cache directory {preview_cache_dir} after error: {cleanup_err}")
-        # Return error state (9 items)
-        return (None, status_message, None,
-                gr.update(value=None), gr.update(visible=False),
-                gr.update(choices=[], value=None, visible=False), {}, None, {})
+        
+        # Reset all UI components to an error state
+        _zip_output_val = None
+        _zip_path_state_val = None
+        _df_preview_update_val = gr.update(value=None)
+        _df_group_update_val = gr.update(visible=False)
+        _unit_selector_update_val = gr.update(choices=[], value=None, visible=False)
+        _unit_data_map_val = {}
+        # _preview_cache_dir_state_val might be None if cleanup succeeded or it never existed
+        _processed_data_dict_val = {}
+        yield get_current_outputs_tuple() # Yield final error state
+        return # End of generator execution due to error
 
 # --- Dropdown Change Handler (DHCR) ---
 def update_df_preview(selected_unit: str, unit_data_map: Dict[str, Path]) -> Dict:

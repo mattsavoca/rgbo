@@ -9,3 +9,4 @@ pydantic
 uvicorn
 gradio
 google-api-core
+XlsxWriter

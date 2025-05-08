@@ -467,6 +467,31 @@ def create_calculator_tab(processed_data_state: gr.State): # <<< Accept shared s
             )
         # --- END Batch Processing Section ---
 
+        # --- ADDED: Combine to XLSX Section ---
+        with gr.Group():
+            gr.Markdown("### Combine All Processed Units to XLSX")
+            gr.Markdown(
+                "Click the button below to process all units currently loaded from the PDF Parser tab. "
+                "This will apply vacancy allowance calculations to each unit, transform columns "
+                "as per the specified XLSX format, and generate a single XLSX file with each unit as a sheet."
+            )
+            combine_to_xlsx_button = gr.Button(
+                "Combine All Units to XLSX",
+                variant="secondary",
+                # Interactivity will depend on logic_available, rgb_data, and if processed_data_state has items
+                interactive=(logic_available and rgb_data is not None and not rgb_data.is_empty())
+            )
+            xlsx_status_output = gr.Textbox(
+                label="XLSX Generation Status",
+                interactive=False,
+                lines=3
+            )
+            download_xlsx_file = gr.File(
+                label="Download Combined XLSX File",
+                interactive=True # Initial state, will be updated by button click
+            )
+        # --- END Combine to XLSX Section ---
+
         with gr.Row():
             with gr.Column(scale=1):
                 apt_status_input = gr.Radio(
@@ -536,6 +561,18 @@ def create_calculator_tab(processed_data_state: gr.State): # <<< Accept shared s
         # Add a new Markdown component for notes/footnotes
         notes_output = gr.Markdown(label="Relevant Guideline Notes & Footnotes", value="Notes will appear here after calculation.")
         
+        # --- Import for XLSX generation ---
+        try:
+            from scripts.units_to_xls import generate_xlsx_from_units_data
+            xlsx_logic_available = True
+            log.info("Successfully imported generate_xlsx_from_units_data from scripts.units_to_xls")
+        except ImportError as e:
+            log.error(f"Failed to import XLSX generation logic: {e}", exc_info=True)
+            xlsx_logic_available = False
+            def generate_xlsx_from_units_data(*args, **kwargs):
+                raise ImportError("generate_xlsx_from_units_data is unavailable due to import error.")
+        # --- End Import for XLSX ---
+
         # --- ADDED: Function and Event Handler for Batch CSV Processing ---
         def process_selected_unit_csv_for_tab(
             selected_unit_name: Optional[str], 
@@ -614,6 +651,64 @@ def create_calculator_tab(processed_data_state: gr.State): # <<< Accept shared s
             ]
         )
         # --- END Batch CSV Processing --- 
+
+        # --- ADDED: Function and Event Handler for Combine to XLSX ---
+        def handle_combine_to_xlsx(
+            current_processed_data: Dict[str, pl.DataFrame]
+            # rgb_data is accessed from the global scope (rgb_data in this file)
+        ) -> Tuple[str, Optional[str], gr.update]: # Status, filepath, visibility update for download
+            visibility_update = gr.update(value=None, visible=False) # Default to hidden and no file
+
+            if not xlsx_logic_available:
+                status = "Error: XLSX generation logic is not available. Cannot process."
+                log.error(status)
+                return status, None, visibility_update
+            
+            if not logic_available or rgb_data is None or rgb_data.is_empty():
+                status = "Error: Core calculation logic or RGBO data is not available. Cannot process for XLSX."
+                log.error(status)
+                return status, None, visibility_update
+
+            if not current_processed_data:
+                status = "No unit data loaded from the PDF Parser tab. Please process a PDF first."
+                log.warning(status)
+                return status, None, visibility_update
+
+            status = f"Starting XLSX generation for {len(current_processed_data)} units..."
+            log.info(status)
+
+            try:
+                xlsx_filepath = generate_xlsx_from_units_data(current_processed_data, rgb_data)
+
+                if xlsx_filepath:
+                    status += f"\nSuccessfully generated XLSX file: {Path(xlsx_filepath).name}"
+                    log.info(f"XLSX file ready for download: {xlsx_filepath}")
+                    visibility_update = gr.update(value=xlsx_filepath, visible=True)
+                    return status, xlsx_filepath, visibility_update
+                else:
+                    status += "\nError: XLSX generation failed. Check logs for details."
+                    log.error("XLSX generation returned no filepath.")
+                    return status, None, visibility_update
+
+            except ImportError as imp_err: # Should be caught by xlsx_logic_available check mostly
+                error_msg = f"Error during XLSX generation: Could not use processing function ({imp_err})."
+                log.error(error_msg, exc_info=True)
+                return error_msg, None, visibility_update
+            except Exception as e:
+                error_msg = f"An unexpected error occurred during XLSX generation: {e}"
+                log.error(error_msg, exc_info=True)
+                return error_msg, None, visibility_update
+
+        combine_to_xlsx_button.click(
+            fn=handle_combine_to_xlsx,
+            inputs=[processed_data_state], # Pass the shared state
+            outputs=[
+                xlsx_status_output,
+                download_xlsx_file,      # For the file path
+                download_xlsx_file       # For visibility update
+            ]
+        )
+        # --- END Combine to XLSX ---
 
         # Function to update tenant tenure input based on new tenant status
         def update_tenure_interactivity(new_tenant_status):

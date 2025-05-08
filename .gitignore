@@ -3,6 +3,7 @@ dhcr_output_csvs/
 temp_uploads/
 .cursor/
 sdk/
+sample data/
 __pycache__/
 archive/
 .venv/
