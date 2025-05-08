@@ -443,6 +443,30 @@ def create_calculator_tab(processed_data_state: gr.State): # <<< Accept shared s
             )
         # --- END Preview Section ---
 
+        # --- ADDED: Combine to XLSX Section ---
+        with gr.Group():
+            gr.Markdown("### Combine All Processed Units to XLSX")
+            gr.Markdown(
+                "Click the button below to process all units currently loaded from the PDF Parser tab. "
+                "This will apply vacancy allowance calculations to each unit, transform columns "
+                "as per the specified XLSX format, and generate a single XLSX file with each unit as a sheet."
+            )
+            combine_to_xlsx_button = gr.Button(
+                "Combine All Units to XLSX",
+                variant="stop",
+                interactive=(logic_available and rgb_data is not None and not rgb_data.is_empty())
+            )
+            xlsx_status_output = gr.Textbox(
+                label="XLSX Generation Status",
+                interactive=False,
+                lines=3
+            )
+            download_xlsx_file = gr.File(
+                label="Download Combined XLSX File",
+                interactive=True
+            )
+        # --- END Combine to XLSX Section ---
+
         # --- ADDED: Batch Processing Section for Selected Unit CSV ---
         with gr.Group():
             gr.Markdown("### Process Full Unit CSV for Vacancy Allowances")
@@ -466,31 +490,6 @@ def create_calculator_tab(processed_data_state: gr.State): # <<< Accept shared s
                 interactive=True # Will be made interactive once a file is ready
             )
         # --- END Batch Processing Section ---
-
-        # --- ADDED: Combine to XLSX Section ---
-        with gr.Group():
-            gr.Markdown("### Combine All Processed Units to XLSX")
-            gr.Markdown(
-                "Click the button below to process all units currently loaded from the PDF Parser tab. "
-                "This will apply vacancy allowance calculations to each unit, transform columns "
-                "as per the specified XLSX format, and generate a single XLSX file with each unit as a sheet."
-            )
-            combine_to_xlsx_button = gr.Button(
-                "Combine All Units to XLSX",
-                variant="secondary",
-                # Interactivity will depend on logic_available, rgb_data, and if processed_data_state has items
-                interactive=(logic_available and rgb_data is not None and not rgb_data.is_empty())
-            )
-            xlsx_status_output = gr.Textbox(
-                label="XLSX Generation Status",
-                interactive=False,
-                lines=3
-            )
-            download_xlsx_file = gr.File(
-                label="Download Combined XLSX File",
-                interactive=True # Initial state, will be updated by button click
-            )
-        # --- END Combine to XLSX Section ---
 
         with gr.Row():
             with gr.Column(scale=1):
@@ -800,23 +799,28 @@ def create_calculator_tab(processed_data_state: gr.State): # <<< Accept shared s
         # --- ADDED: Event Handlers for Preview Section ---
 
         # Function to update the dropdown choices when the shared state changes
-        def update_calculator_unit_dropdown(processed_data: Dict[str, pl.DataFrame]) -> gr.Dropdown:
+        def update_calculator_unit_dropdown(processed_data: Dict[str, pl.DataFrame]) -> Tuple[gr.update, gr.update]:
             """Updates the choices in the unit selection dropdown based on the processed data.
+            Also updates the combine_to_xlsx_button variant.
             Args:
                 processed_data: The dictionary {unit_name: dataframe} from the shared state.
             Returns:
-                An updated Gradio Dropdown component.
+                A tuple of Gradio update objects for the dropdown and the button.
             """
             sorted_unit_names = sorted(list(processed_data.keys())) if processed_data else []
             log.info(f"Updating calculator tab dropdown with units: {sorted_unit_names}")
-            # Select the first unit name as the default value if units exist, otherwise None
             new_value = sorted_unit_names[0] if sorted_unit_names else None
             log.info(f"Setting dropdown value to: {new_value}")
-            # Keep existing value if it's still valid, otherwise reset
-            # current_value = calculator_unit_selector_dd.value # Can't access component value directly here
-            # new_value = current_value if current_value in unit_names else None
-            # return gr.update(choices=sorted(unit_names), value=None, interactive=bool(unit_names)) # Old return
-            return gr.update(choices=sorted_unit_names, value=new_value, interactive=bool(sorted_unit_names)) # New return with default value
+            
+            dropdown_update = gr.update(choices=sorted_unit_names, value=new_value, interactive=bool(sorted_unit_names))
+            
+            # Update button variant based on data presence
+            if sorted_unit_names: # Data is present
+                button_update = gr.update(variant="primary") # "Green-like" (active state, typically blue)
+            else: # No data
+                button_update = gr.update(variant="stop") # "Orange-like" (initial/warning state, typically red)
+                
+            return dropdown_update, button_update
 
         # Function to update the DataFrame preview when a unit is selected
         def update_calculator_df_preview(selected_unit: str, processed_data: Dict[str, pl.DataFrame]) -> gr.DataFrame:
@@ -838,7 +842,7 @@ def create_calculator_tab(processed_data_state: gr.State): # <<< Accept shared s
         processed_data_state.change(
             fn=update_calculator_unit_dropdown,
             inputs=[processed_data_state],
-            outputs=[calculator_unit_selector_dd]
+            outputs=[calculator_unit_selector_dd, combine_to_xlsx_button]
         )
 
         # Trigger DataFrame update when the dropdown selection changes

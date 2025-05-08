@@ -977,6 +977,13 @@ with gr.Blocks(title="DHCR PDF Parser & Tools") as demo:
             )
         # --- END TAB 3 (CBB) ---
 
+    gr.Markdown(
+        """
+Made by Enigmattic, LLC
+
+AI tools like this can make mistakes. Always check important info.
+        """
+    )
 
 # --- Launch the App ---
 if __name__ == "__main__":
