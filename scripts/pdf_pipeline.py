@@ -48,43 +48,66 @@ DEFAULT_OUTPUT_DIR = Path("./dhcr_output_csvs")
 def parse_flexible_date(value: Optional[Union[str, date]]) -> Optional[date]:
     """Attempts to parse various date formats, returning None if parsing fails."""
     if isinstance(value, date):
+        logging.debug(f"Value '{value}' is already a date object.")
         return value
     if not value or not isinstance(value, str):
+        logging.debug(f"Value '{value}' is None or not a string, returning None.")
         return None
-    # Handle common variations or potential LLM outputs
+        
+    original_value_for_logging = value # Preserve original for final log if all fails
     value = value.strip()
+    logging.debug(f"Attempting to parse date: '{value}' (original: '{original_value_for_logging}')")
+
     if value.lower() in ["", "none", "n/a", "na"] or value.upper() == "NC":
+        logging.debug(f"Date value '{value}' recognized as null/NC, returning None.")
         return None
         
     # Special handling for "%m-%d-%y" format with century inference
     m_d_y_pattern = re.compile(r"(\d{1,2})[-/](\d{1,2})[-/](\d{2})$") # Accept hyphen or slash
     match = m_d_y_pattern.match(value)
     if match:
-        month, day, year = match.groups()
-        yr_str = year
-        yr_int = int(yr_str)
-        cent_prefix = "19" if yr_int > 50 else "20"
-        new_yr = cent_prefix + yr_str
+        month, day, year_yy = match.groups()
+        logging.debug(f"Date '{value}' matched MM/DD/YY pattern: M={month}, D={day}, YY={year_yy}")
+        yr_int = int(year_yy)
+        cent_prefix = "19" if yr_int > 50 else "20" # Basic century inference
+        # Consider current year to refine century for YY around 50 if needed, e.g. (current_year - 2000 + 20)
+        # For now, standard yr > 50 logic is common.
+        new_yr_str = cent_prefix + year_yy
+        formatted_date_for_strptime = f"{month.zfill(2)}/{day.zfill(2)}/{new_yr_str}" # Ensure MM/DD/YYYY
+        logging.debug(f"Constructed YYYY date string: '{formatted_date_for_strptime}' for MM/DD/YY input '{value}'.")
         try:
-            return datetime.strptime(f"{month}/{day}/{new_yr}", "%m/%d/%Y").date()
-        except (ValueError, TypeError):
-            pass  # If this fails, continue with other formats
+            parsed_dt = datetime.strptime(formatted_date_for_strptime, "%m/%d/%Y").date()
+            logging.info(f"Successfully parsed MM/DD/YY input '{value}' as '{parsed_dt}'.")
+            return parsed_dt
+        except (ValueError, TypeError) as e:
+            logging.warning(f"strptime failed for constructed MM/DD/YY string '{formatted_date_for_strptime}' (from original '{value}'): {e}. Falling back to other formats.")
+            # Fall through to formats_to_try if this specific parsing fails
             
     formats_to_try = [
         "%Y-%m-%d",  # Standard ISO
-        "%m/%d/%Y",  # Common US format
-        "%m-%d-%Y",
+        "%m/%d/%Y",  # Common US format (4-digit year)
+        "%m-%d-%Y",  # Common US format (4-digit year)
         "%d-%b-%Y",  # e.g., 01-Jan-2023
         "%B %d, %Y", # e.g., January 1, 2023
         "%Y%m%d",    # Sometimes dates appear without separators
+        # Added %m/%d/%y as a fallback if LLM provides it directly and regex part fails.
+        # This requires century logic to be applied after or needs careful thought,
+        # as strptime with %y uses system locale for century.
+        # For now, relying on the regex part for MM/DD/YY.
     ]
+    logging.debug(f"Attempting to parse '{value}' with standard formats: {formats_to_try}")
     for fmt in formats_to_try:
         try:
             # Handle potential time components if LLM includes them
-            return datetime.strptime(value.split(' ')[0], fmt).date()
+            date_part = value.split(' ')[0]
+            parsed_dt = datetime.strptime(date_part, fmt).date()
+            logging.info(f"Date '{value}' (part: '{date_part}') parsed successfully with format '{fmt}' to '{parsed_dt}'.")
+            return parsed_dt
         except (ValueError, TypeError):
+            logging.debug(f"Date '{value}' (part: '{date_part}') failed to parse with format '{fmt}'.")
             continue
-    logging.warning(f"Could not parse date: {value}")
+            
+    logging.warning(f"Could not parse date: '{original_value_for_logging}'. All parsing attempts failed for processed value '{value}'.")
     return None # Return None if all formats fail
 
 def parse_currency(value: Union[str, float, int]) -> Optional[float]:
@@ -133,7 +156,13 @@ class DHCR_Entry(BaseModel):
     @classmethod
     def normalize_apt_number(cls, value):
         if isinstance(value, str):
-            return value.strip().upper() # Normalize for consistent grouping
+            normalized_value = value.strip().upper()
+            # Remove leading zeros if followed by a non-zero digit or a letter
+            # e.g., "08E" -> "8E", "007" -> "7", "0A" -> "A"
+            # Keeps "0", "00" (if they are actual apt numbers not followed by 1-9 or A-Z),
+            # and "G01" (doesn't start with a strippable zero) as is.
+            normalized_value = re.sub(r"^0+(?=[1-9A-Z])", "", normalized_value)
+            return normalized_value
         return value
 
     # Provide aliases for CSV export consistency if needed
@@ -316,7 +345,9 @@ def extract_data_from_page(client: Client, pdf_data: bytes, page_number: int) ->
             if isinstance(raw_data, dict) and "dhcr_entries" in raw_data and isinstance(raw_data["dhcr_entries"], list):
                  # Use Pydantic to parse and validate the list of entries
                  page_data = DHCR_Page_Data(dhcr_entries=raw_data["dhcr_entries"])
-                 logging.info(f"Successfully extracted and validated {len(page_data.dhcr_entries)} entries from page {page_number}.")
+                 # Extract unique apartment numbers for logging
+                 unique_apts = sorted(list(set(entry.apt_number for entry in page_data.dhcr_entries if entry.apt_number)))
+                 logging.info(f"Successfully extracted and validated {len(page_data.dhcr_entries)} entries from page {page_number} for apartments {unique_apts}.")
                  return page_data
             else:
                  logging.warning(f"Attempt {attempt + 1}: Unexpected JSON structure received for page {page_number}: {raw_data}. Retrying...")

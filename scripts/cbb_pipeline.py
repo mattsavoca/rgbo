@@ -324,6 +324,43 @@ def export_docket_to_csv(docket_no: str, docket_entries: List[CBB_Entry], output
         logging.error(f"Unexpected error during CSV export for Docket {docket_no}: {e}", exc_info=True)
 
 
+def export_all_entries_to_csv(all_entries: List[CBB_Entry], output_dir: Path, filename: str = "all_dockets_report.csv"):
+    """Exports all CBB entries to a single CSV file."""
+    if not all_entries:
+        logging.warning("No entries found to export to the combined CSV. Skipping.")
+        return None
+
+    # Sort entries for consistency, e.g., by Bldg Id, then Docket No, then File Date
+    # This is a more comprehensive sort for the combined file.
+    all_entries.sort(key=lambda x: (
+        x.bldg_id or "",
+        x.docket_no or "",
+        x.file_date or date.min,
+        x.start_date or date.min
+    ))
+
+    output_file_path = output_dir / filename
+    logging.info(f"Exporting all {len(all_entries)} entries to {output_file_path}")
+
+    # Use the first entry to determine headers, assuming all entries have the same structure.
+    headers = list(all_entries[0].to_dict_for_csv().keys())
+
+    try:
+        with open(output_file_path, 'w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=headers)
+            writer.writeheader()
+            for entry in all_entries:
+                writer.writerow(entry.to_dict_for_csv())
+        logging.info(f"Successfully exported all entries to {output_file_path}")
+        return filename # Return the name of the created file
+    except IOError as e:
+        logging.error(f"Failed to write combined CSV file {output_file_path}: {e}")
+        return None
+    except Exception as e:
+        logging.error(f"Unexpected error during combined CSV export to {output_file_path}: {e}", exc_info=True)
+        return None
+
+
 # --- Main Execution Logic ---
 
 def process_cbb_pdf(pdf_filepath: Union[str, Path], output_dir: Path, generate_images: bool = False):
@@ -427,6 +464,18 @@ def process_cbb_pdf(pdf_filepath: Union[str, Path], output_dir: Path, generate_i
             'csv_filename': csv_filename # Just the filename
         })
 
+    # 6b. Export all entries to a single CSV
+    combined_csv_filename = "all_dockets_report.csv" # Define a standard name
+    created_combined_csv_name = export_all_entries_to_csv(all_cbb_entries, output_dir, combined_csv_filename)
+    if created_combined_csv_name:
+        exported_files_info.append({
+            'docket_no': '_ALL_ENTRIES_', # Special identifier
+            'csv_filename': created_combined_csv_name
+        })
+        logging.info(f"Added combined CSV '{created_combined_csv_name}' to exported files list.")
+    else:
+        logging.warning(f"Failed to create the combined CSV file. It will not be in the exported files list.")
+
     # 7. Generate images if requested
     if generate_images:
         image_output_dir = output_dir / f"{pdf_path.stem}_images"
@@ -463,7 +512,7 @@ if __name__ == "__main__":
         "-o", "--output",
         type=str,
         default=str(DEFAULT_OUTPUT_DIR),
-        help=f"Directory to save output CSVs and images (default: {DEFAULT_OUTPUT_DIR})"
+        help=f"Directory to save output CSVs and images (default: {DEFAULT_OUTPUT_DIR}). This directory will also contain '{combined_csv_filename}' if entries are found."
     )
     args = parser.parse_args()
 

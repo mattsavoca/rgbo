@@ -148,7 +148,10 @@ def calculate_vacancy_allowance_for_row(
 
     prev_pref_rent_bool = unit_data_current_row.get('previous_preferential_rent_has_value', False)
     previous_preferential_rent_has_value_str = "Yes" if prev_pref_rent_bool else "No"
-    tenant_tenure_years = float(unit_data_current_row.get('tenant_tenure_years', 0.0))
+    
+    # Ensure tenant_tenure_years is handled if it's None from the DataFrame calculation
+    tenure_val = unit_data_current_row.get('tenant_tenure_years', 0.0)
+    tenant_tenure_years = float(tenure_val if tenure_val is not None else 0.0)
 
     is_order52_first_year_str = "No"
     if order_number == "52" and term_length_str == "2+":
@@ -290,6 +293,16 @@ def add_vacancy_allowances_to_df(unit_df: pl.DataFrame, rgb_data_full: pl.DataFr
     """
     log.info(f"Starting to process DataFrame for vacancy allowances. Input shape: {unit_df.shape}")
     df = unit_df.clone() # Work on a copy
+
+    # --- ADDED: Deduplication Step ---
+    original_rows = df.height
+    df = df.unique(maintain_order=True) # Remove completely identical rows
+    rows_after_dedup = df.height
+    if original_rows != rows_after_dedup:
+        log.info(f"Removed {original_rows - rows_after_dedup} duplicate rows. Shape after deduplication: {df.shape}")
+    else:
+        log.info("No duplicate rows found.")
+    # --- END Deduplication Step ---
 
     # --- Ensure date columns are parsed (if not already) ---
     if "Lease Began" in df.columns and df["Lease Began"].dtype == pl.String:

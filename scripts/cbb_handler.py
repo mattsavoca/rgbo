@@ -58,13 +58,13 @@ def run_cbb_processing(pdf_path: Path, base_output_dir: Path, generate_images: b
         # --- Structure results for Gradio --- #
         if exported_files_info:
              for file_info in exported_files_info:
-                 docket_no = file_info.get('docket_no')
+                 docket_no = file_info.get('docket_no') # This could be the special "_ALL_ENTRIES_"
                  csv_filename = file_info.get('csv_filename')
                  if docket_no and csv_filename:
                      # Construct the RELATIVE path to the CSV from the base_output_dir perspective
                      relative_csv_path = relative_run_output_path / csv_filename
                      results_list.append({
-                         'docket_no': docket_no,
+                         'docket_no': docket_no, # Pass the docket_no (or special ID) through
                          'csv_path': relative_csv_path
                      })
                  else:

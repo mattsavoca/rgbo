@@ -20,3 +20,4 @@ cloudbuild.yaml
 local_launch/
 releases/
 guides/
+client/
