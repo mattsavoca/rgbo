@@ -1,13 +1,8 @@
-# DHCR Rent Registration Parser - Local Docker Version
+# DHCR and CBB Parser - Local Version
 
-This application parses DHCR Rent Registration PDF files, extracts data, calculates vacancy allowances, and presents the results in a web interface.
-
-It is packaged using Docker for easy local execution.
+This application parses DHCR Rent Registration PDF files, scans and extracts data with AI vision models, calculates vacancy allowances, and compiles and exports the parsed data for Excel. It also presents the scan and calculation results in a web interface.
 
 ## Prerequisites
-
-*   **Docker Desktop**: You must have Docker Desktop installed and running on your system (Windows, macOS, or Linux).
-    *   Download from: [https://www.docker.com/products/docker-desktop/](https://www.docker.com/products/docker-desktop/)
 
 ## !! IMPORTANT: Gemini API Key Required !!
 
@@ -16,6 +11,7 @@ Even though this application runs locally via Docker, the core PDF data extracti
 1.  You **need an internet connection** when processing PDFs.
 2.  You **need a Gemini API key**.
     *   Get one for free here: [https://ai.google.dev/](https://ai.google.dev/)
+3.  Add your GEMINI API Ke to the config file with a text editor
 
 **How the API Key is Handled:**
 
@@ -49,26 +45,4 @@ Even though this application runs locally via Docker, the core PDF data extracti
 ## Windows Usage
 
 
-
 !!!~~~ WIP ~~~!!!
-1.  **Open a Command Prompt or PowerShell** in the directory containing this README file and the other scripts (`Dockerfile`, `run.bat`, `stop.bat`, etc.).
-2.  **Start the Application**:
-    *   Run the command: `run.bat`
-    *   The first time you run this, it will:
-        *   Prompt you for your Gemini API Key if it hasn't been saved yet.
-        *   Build the Docker image (this might take a few minutes).
-        *   Start the application container.
-    *   Subsequent runs will just start the container (rebuilding only if necessary).
-3.  **Access the Application**:
-    *   Open your web browser and go to: [http://127.0.0.1:7865] (the final 4 digits may shift if that address is unavilable on your machine)
-4.  **Manually Stop the Application**:
-    *   Open a Command Prompt or PowerShell in the same directory.
-    *   Run the command: `stop.bat`
-    *   This will stop and remove the running Docker container.
-
-## Temporary Files
-
-The application uses temporary storage *inside* the Docker container (in `/tmp`) for uploads and processed files. This storage is ephemeral:
-
-*   Stopping the container (via `stop.sh` or `stop.bat`) effectively removes these temporary files because the container is removed.
-*   The application also has a "Reset" button in the UI which clears these internal temporary directories. 
