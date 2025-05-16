@@ -4,6 +4,7 @@ import tempfile
 from typing import Dict, List, Tuple, Optional, Any
 import logging
 import xlsxwriter # Import xlsxwriter
+from datetime import date # Add this import
 
 # Configure logging for this module
 log = logging.getLogger(__name__)
